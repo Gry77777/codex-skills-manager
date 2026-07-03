@@ -1,0 +1,173 @@
+import crypto from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import type { SkillIssue, SkillRecord, SkillSource } from "../shared/types.js";
+import type { SkillRoots } from "./paths.js";
+import { getPrimarySkillMarkdown, readSkillDiskState } from "./skill-disk-state.js";
+import { analyzeSkillHealth } from "./skill-health-analyzer.js";
+import { buildSkillSummaryZh } from "./skill-summary.js";
+export { parseFrontmatter } from "./skill-frontmatter.js";
+
+type ScanRoot = {
+  source: SkillSource;
+  path: string;
+};
+
+export class SkillScanner {
+  constructor(private readonly roots: SkillRoots) {}
+
+  async scan(): Promise<SkillRecord[]> {
+    const roots: ScanRoot[] = [
+      { source: "codex-local", path: this.roots.codexLocal },
+      { source: "agent-local", path: this.roots.agentLocal },
+      { source: "imported", path: this.roots.imported }
+    ];
+
+    const scanned = (await Promise.all(roots.map((root) => this.scanRoot(root)))).flat();
+    return markDuplicateNames(scanned);
+  }
+
+  private async scanRoot(root: ScanRoot): Promise<SkillRecord[]> {
+    if (!(await exists(root.path))) {
+      return [];
+    }
+
+    const entries = await fs.readdir(root.path, { withFileTypes: true });
+    const directories = entries.filter((entry) => entry.isDirectory());
+    const skillDirectories = (
+      await Promise.all(
+        directories.map(async (entry) => {
+          const entryPath = path.join(root.path, entry.name);
+          const nestedSkillDirectories = await collectSkillDirectories(entryPath);
+          return nestedSkillDirectories.length > 0 ? nestedSkillDirectories : [entryPath];
+        })
+      )
+    ).flat();
+    const records = await Promise.all(
+      skillDirectories.map((skillPath) => this.scanSkillDirectory(root.source, skillPath))
+    );
+
+    return records;
+  }
+
+  private async scanSkillDirectory(source: SkillSource, skillPath: string): Promise<SkillRecord> {
+    const now = new Date().toISOString();
+    const diskState = await readSkillDiskState(skillPath);
+    const health = analyzeSkillHealth(diskState);
+    const primary = getPrimarySkillMarkdown(diskState);
+    const name = primary?.frontmatter.name?.trim() || path.basename(skillPath);
+    const description = primary?.frontmatter.description?.trim() || "";
+    const hash = diskState.kind === "path-missing" ? "" : await hashDirectory(skillPath);
+
+    return {
+      id: buildSkillId(source, skillPath),
+      name,
+      description,
+      summaryZh: buildSkillSummaryZh({ name, description, source, valid: health.valid, issues: health.issues }),
+      path: skillPath,
+      source,
+      status: health.status,
+      readonly: source !== "imported",
+      valid: health.valid,
+      issues: health.issues,
+      hash,
+      lastScannedAt: now
+    };
+  }
+}
+
+export function buildSkillId(source: SkillSource, absolutePath: string): string {
+  return crypto.createHash("sha256").update(`${source}:${path.resolve(absolutePath)}`).digest("hex");
+}
+
+async function exists(targetPath: string): Promise<boolean> {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function collectSkillDirectories(candidatePath: string, depth = 0): Promise<string[]> {
+  if (await hasSkillMarkdown(candidatePath)) {
+    return [candidatePath];
+  }
+
+  if (depth >= 4) {
+    return [];
+  }
+
+  let entries;
+  try {
+    entries = await fs.readdir(candidatePath, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const directories = entries.filter((entry) => entry.isDirectory());
+  const nested = await Promise.all(
+    directories.map((entry) => collectSkillDirectories(path.join(candidatePath, entry.name), depth + 1))
+  );
+
+  return nested.flat();
+}
+
+async function hasSkillMarkdown(skillPath: string): Promise<boolean> {
+  return (await exists(path.join(skillPath, "SKILL.md"))) || (await exists(path.join(skillPath, "SKILL.md.disabled")));
+}
+
+async function hashDirectory(directory: string): Promise<string> {
+  const hash = crypto.createHash("sha256");
+
+  async function walk(current: string): Promise<void> {
+    const entries = await fs.readdir(current, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === "node_modules") {
+        continue;
+      }
+
+      const entryPath = path.join(current, entry.name);
+      const relative = path.relative(directory, entryPath);
+      hash.update(relative);
+
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+      } else if (entry.isFile()) {
+        hash.update(await fs.readFile(entryPath));
+      }
+    }
+  }
+
+  await walk(directory);
+  return hash.digest("hex");
+}
+
+function markDuplicateNames(skills: SkillRecord[]): SkillRecord[] {
+  const byName = new Map<string, SkillRecord[]>();
+
+  for (const skill of skills) {
+    const key = skill.name.toLowerCase();
+    byName.set(key, [...(byName.get(key) ?? []), skill]);
+  }
+
+  return skills.map((skill) => {
+    const duplicates = byName.get(skill.name.toLowerCase()) ?? [];
+    if (duplicates.length <= 1) {
+      return skill;
+    }
+
+    return {
+      ...skill,
+      issues: [
+        ...skill.issues,
+        {
+          code: "duplicate-name",
+          message: `发现另一个同名技能：“${skill.name}”。这个记录仍然可以单独管理。`
+        }
+      ]
+    };
+  });
+}
