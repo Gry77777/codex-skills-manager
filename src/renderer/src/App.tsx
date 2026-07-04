@@ -55,7 +55,7 @@ import type {
   GitHubSkillCandidate,
   MarketplaceSearchResult,
   MarketplaceSkill,
-  MarketplaceSource,
+  MarketplaceSourceView,
   SettableSkillStatus,
   SkillRecord,
   SkillSource,
@@ -1400,13 +1400,13 @@ export function App(): JSX.Element {
     setIsMarketplaceOpen(false);
   }
 
-  async function searchMarketplace(query = marketplaceQuery): Promise<void> {
+  async function searchMarketplace(query = marketplaceQuery, sourceId = marketplaceSourceFilter): Promise<void> {
     setIsSearchingMarketplace(true);
     setError(null);
     setNotice(null);
 
     try {
-      const result = await getSkillsApi().searchMarketplace({ query, limit: 96 });
+      const result = await getSkillsApi().searchMarketplace({ query, sourceId, limit: 96 });
       setMarketplaceResult(result);
     } catch (marketplaceError) {
       setError(marketplaceError instanceof Error ? marketplaceError.message : "搜索技能广场失败。");
@@ -1433,21 +1433,36 @@ export function App(): JSX.Element {
     await installMarketplaceUrl(skill.id, skill.installUrl);
   }
 
-  async function installMarketplaceSource(source: MarketplaceSource): Promise<void> {
-    if (!source.url.startsWith("https://github.com/")) {
+  async function refreshMarketplaceSource(source: MarketplaceSourceView): Promise<void> {
+    if (!source.canIndex) {
       window.open(source.url, "_blank", "noopener,noreferrer");
       return;
     }
 
-    const indexedCount =
-      marketplaceResult?.items.filter((item) => item.sourceName === source.name).length ?? 0;
-    if (indexedCount === 0) {
-      await installMarketplaceUrl(source.id, source.url);
-      return;
-    }
-
     setMarketplaceSourceFilter(source.id);
-    setNotice(`已切换到「${source.name}」来源，当前有 ${indexedCount} 个本地索引候选。安装具体技能时才会读取并校验 SKILL.md。`);
+    setMarketplaceInstallingId(source.id);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const result = await getSkillsApi().refreshMarketplaceSource(source.id, {
+        query: marketplaceQuery,
+        sourceId: source.id,
+        limit: 96
+      });
+      setMarketplaceResult(result);
+      const refreshedSource = result.sources.find((candidate) => candidate.id === source.id);
+      if (refreshedSource?.status === "error") {
+        setError(`「${source.name}」索引失败：${refreshedSource.error ?? "未知错误"}`);
+        return;
+      }
+
+      setNotice(`已刷新「${source.name}」，找到 ${refreshedSource?.indexedCount ?? 0} 个可浏览候选。安装具体技能时才会读取并校验 SKILL.md。`);
+    } catch (marketplaceError) {
+      setError(marketplaceError instanceof Error ? marketplaceError.message : "刷新技能来源失败。");
+    } finally {
+      setMarketplaceInstallingId(null);
+    }
   }
 
   async function installMarketplaceUrl(id: string, url: string): Promise<void> {
@@ -1966,7 +1981,7 @@ export function App(): JSX.Element {
           onSearch={() => void searchMarketplace()}
           onClose={closeMarketplace}
           onInstallSkill={(skill) => void installMarketplaceSkill(skill)}
-          onInstallSource={(source) => void installMarketplaceSource(source)}
+          onRefreshSource={(source) => void refreshMarketplaceSource(source)}
         />
       ) : null}
 
@@ -2772,7 +2787,7 @@ function MarketplaceDialog({
   onSearch,
   onClose,
   onInstallSkill,
-  onInstallSource
+  onRefreshSource
 }: {
   query: string;
   sourceFilter: string;
@@ -2784,16 +2799,14 @@ function MarketplaceDialog({
   onSearch: () => void;
   onClose: () => void;
   onInstallSkill: (skill: MarketplaceSkill) => void;
-  onInstallSource: (source: MarketplaceSource) => void;
+  onRefreshSource: (source: MarketplaceSourceView) => void;
 }): JSX.Element {
   const isBusy = isSearching || Boolean(installingId);
   const sources = result?.sources ?? [];
   const items = result?.items ?? [];
   const selectedSource = sources.find((source) => source.id === sourceFilter);
-  const visibleItems = selectedSource ? items.filter((item) => item.sourceName === selectedSource.name) : items;
-  const selectedSourceItemCount = selectedSource
-    ? items.filter((item) => item.sourceName === selectedSource.name).length
-    : items.length;
+  const visibleItems = selectedSource ? items.filter((item) => item.sourceId === selectedSource.id) : items;
+  const selectedSourceItemCount = selectedSource ? selectedSource.indexedCount : items.length;
   const totalStars = items.reduce((total, item) => total + (item.stars ?? 0), 0);
 
   function submitSearch(event: FormEvent<HTMLFormElement>): void {
@@ -2882,11 +2895,11 @@ function MarketplaceDialog({
                 <MarketplaceSourceCard
                   key={source.id}
                   source={source}
-                  indexedCount={items.filter((item) => item.sourceName === source.name).length}
                   isBusy={isBusy}
                   isInstalling={installingId === source.id}
                   isActive={sourceFilter === source.id}
-                  onInstall={() => onInstallSource(source)}
+                  onSelect={() => onSourceFilterChange(source.id)}
+                  onRefresh={() => onRefreshSource(source)}
                 />
               ))}
             </div>
@@ -2899,10 +2912,10 @@ function MarketplaceDialog({
                 {isSearching
                   ? visibleItems.length > 0
                     ? "正在后台刷新..."
-                    : "正在快速索引技能仓库..."
+                    : "正在读取本地索引..."
                   : result
                     ? `找到 ${visibleItems.length} 个候选`
-                    : "打开后会自动加载热门技能"}
+                    : "打开后会先读取本地索引"}
               </span>
             </div>
 
@@ -2921,21 +2934,19 @@ function MarketplaceDialog({
             ) : (
               <div className="marketplace-empty" role="status">
                 <Package aria-hidden="true" size={28} />
-                <strong>{isSearching ? "正在搜索..." : selectedSource ? "这个来源暂无本地索引结果" : "暂无搜索结果"}</strong>
+                <strong>{getMarketplaceEmptyTitle(isSearching, selectedSource)}</strong>
                 <span>
-                  {selectedSource
-                    ? "快速索引没有在这个来源里找到可直接展示的 SKILL.md。可以手动扫描来源，或打开来源网站确认目录结构。"
-                    : "换一个关键词，或直接从内置来源识别 GitHub 仓库。"}
+                  {getMarketplaceEmptyDescription(selectedSource, query)}
                 </span>
-                {selectedSource?.url.startsWith("https://github.com/") && selectedSourceItemCount === 0 ? (
+                {selectedSource?.canIndex && selectedSourceItemCount === 0 ? (
                   <button
                     className="button primary"
                     type="button"
-                    onClick={() => onInstallSource(selectedSource)}
+                    onClick={() => onRefreshSource(selectedSource)}
                     disabled={isBusy}
                   >
                     <Github aria-hidden="true" size={17} />
-                    扫描这个来源
+                    {selectedSource.status === "error" ? "重新扫描来源" : "扫描这个来源"}
                   </button>
                 ) : null}
               </div>
@@ -2947,27 +2958,103 @@ function MarketplaceDialog({
   );
 }
 
+function getMarketplaceSourceStatusLabel(source: MarketplaceSourceView): string {
+  if (source.status === "ready") {
+    return "可浏览";
+  }
+
+  if (source.status === "empty") {
+    return "未发现";
+  }
+
+  if (source.status === "error") {
+    return "扫描失败";
+  }
+
+  if (source.status === "not-indexed") {
+    return "未扫描";
+  }
+
+  return "外部目录";
+}
+
+function getMarketplaceEmptyTitle(isSearching: boolean, selectedSource: MarketplaceSourceView | undefined): string {
+  if (isSearching) {
+    return "正在搜索...";
+  }
+
+  if (!selectedSource) {
+    return "暂无搜索结果";
+  }
+
+  if (selectedSource.status === "not-indexed") {
+    return "这个来源还没有扫描";
+  }
+
+  if (selectedSource.status === "error") {
+    return "这个来源上次扫描失败";
+  }
+
+  if (selectedSource.status === "external") {
+    return "这个来源需要打开网站查看";
+  }
+
+  return "这个来源暂无本地索引结果";
+}
+
+function getMarketplaceEmptyDescription(selectedSource: MarketplaceSourceView | undefined, query: string): string {
+  if (!selectedSource) {
+    return query.trim()
+      ? "换一个关键词，或扫描左侧的 GitHub 来源扩展本地索引。"
+      : "先选择一个 GitHub 来源并点击“扫描来源”，或输入关键词搜索 GitHub topic。";
+  }
+
+  if (selectedSource.status === "not-indexed") {
+    return "点击“扫描这个来源”后才会联网读取仓库文件树；平时切换来源只会读取本地缓存，不会卡住界面。";
+  }
+
+  if (selectedSource.status === "error") {
+    return selectedSource.error ?? "可以稍后重新扫描，或打开来源页面确认仓库是否可访问。";
+  }
+
+  if (selectedSource.status === "external") {
+    return "这个来源是外部网站或 GitHub Topic，不做仓库级索引；可以打开网站，或输入关键词搜索公开仓库。";
+  }
+
+  return "这个来源已经扫描过，但当前关键词没有匹配项；可以换一个关键词或刷新来源。";
+}
+
 function MarketplaceSourceCard({
   source,
-  indexedCount,
   isBusy,
   isInstalling,
   isActive,
-  onInstall
+  onSelect,
+  onRefresh
 }: {
-  source: MarketplaceSource;
-  indexedCount: number;
+  source: MarketplaceSourceView;
   isBusy: boolean;
   isInstalling: boolean;
   isActive: boolean;
-  onInstall: () => void;
+  onSelect: () => void;
+  onRefresh: () => void;
 }): JSX.Element {
-  const canInstall = source.url.startsWith("https://github.com/");
-  const canScanActiveEmptySource = canInstall && isActive && indexedCount === 0;
   const sourceIcon = source.kind === "codex" ? <Code2 aria-hidden="true" size={18} /> : source.kind === "github-topic" ? <Github aria-hidden="true" size={18} /> : <Globe2 aria-hidden="true" size={18} />;
+  const statusLabel = getMarketplaceSourceStatusLabel(source);
 
   return (
-    <article className={`marketplace-source-card ${isActive ? "active" : ""}`}>
+    <article
+      className={`marketplace-source-card ${isActive ? "active" : ""} status-${source.status}`}
+      onClick={onSelect}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+    >
       <div className="marketplace-source-head">
         <span className={`marketplace-source-icon source-kind-${source.kind}`}>{sourceIcon}</span>
         <div>
@@ -2982,18 +3069,25 @@ function MarketplaceSourceCard({
         {source.tags.map((tag) => (
           <span key={tag}>{tag}</span>
         ))}
-        <span>{indexedCount} 已索引</span>
+        <span>{source.indexedCount} 已索引</span>
+        <span>{statusLabel}</span>
       </div>
-      <button className="mini-action" type="button" onClick={onInstall} disabled={isBusy || (isActive && !canScanActiveEmptySource)}>
-        {canInstall ? <Github aria-hidden="true" size={15} /> : <ExternalLink aria-hidden="true" size={15} />}
+      <button
+        className="mini-action"
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onRefresh();
+        }}
+        disabled={isBusy}
+      >
+        {source.canIndex ? <RefreshCw aria-hidden="true" size={15} /> : <ExternalLink aria-hidden="true" size={15} />}
         {isInstalling
-          ? "处理中..."
-          : canInstall
-            ? indexedCount === 0
+          ? "扫描中..."
+          : source.canIndex
+            ? source.status === "not-indexed"
               ? "扫描来源"
-              : isActive
-                ? "正在查看"
-                : "查看已索引"
+              : "刷新来源"
             : "打开网站"}
       </button>
     </article>

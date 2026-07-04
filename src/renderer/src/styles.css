@@ -2695,6 +2695,12 @@ h1 {
 
 .marketplace-source-card {
   grid-template-rows: auto minmax(52px, auto) auto auto;
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    background 160ms ease;
 }
 
 .marketplace-source-card.active {
@@ -2707,6 +2713,28 @@ h1 {
 .marketplace-skill-card:hover {
   border-color: #b8c6d4;
   background: #ffffff;
+}
+
+.marketplace-source-card:hover {
+  transform: translateY(-1px);
+}
+
+.marketplace-source-card:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.22);
+  outline-offset: 2px;
+}
+
+.marketplace-source-card.status-not-indexed {
+  background: linear-gradient(180deg, #fffaf0 0%, #ffffff 76%);
+}
+
+.marketplace-source-card.status-error {
+  border-color: #f2b8ad;
+  background: linear-gradient(180deg, #fff5f3 0%, #ffffff 76%);
+}
+
+.marketplace-source-card.status-empty {
+  background: linear-gradient(180deg, #f8fafc 0%, #ffffff 76%);
 }
 
 .marketplace-source-card strong,

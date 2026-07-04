@@ -1,13 +1,20 @@
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { MarketplaceSearchInput, MarketplaceSearchResult, MarketplaceSkill, MarketplaceSource } from "../shared/types.js";
+import type {
+  MarketplaceSearchInput,
+  MarketplaceSearchResult,
+  MarketplaceSkill,
+  MarketplaceSource,
+  MarketplaceSourceView
+} from "../shared/types.js";
 import { getMarketplaceCachePath } from "./paths.js";
 
 const DEFAULT_LIMIT = 72;
 const MAX_LIMIT = 120;
 const CACHE_TTL_MS = 30 * 60 * 1000;
-const MAX_INDEXED_SKILLS_PER_SOURCE = 64;
+const MAX_INDEXED_SKILLS_PER_SOURCE = 96;
+const GITHUB_TOPIC_SOURCE_ID = "github-topic-codex-skill";
 
 type IndexedGitHubSource = MarketplaceSource & {
   owner: string;
@@ -57,7 +64,7 @@ const websiteSources: MarketplaceSource[] = [
     tags: ["目录", "跨平台", "搜索"]
   },
   {
-    id: "github-topic-codex-skill",
+    id: GITHUB_TOPIC_SOURCE_ID,
     name: "GitHub Topic: codex-skill",
     description: "直接从 GitHub topic 搜索公开 Codex skills，噪声较高但更新快。",
     url: "https://github.com/topics/codex-skill",
@@ -67,6 +74,7 @@ const websiteSources: MarketplaceSource[] = [
 ];
 
 const marketplaceSources: MarketplaceSource[] = [...indexedGitHubSources, ...websiteSources];
+const indexedSourceIds = new Set(indexedGitHubSources.map((source) => source.id));
 
 type GitHubRepository = {
   full_name: string;
@@ -95,42 +103,56 @@ type GitHubTreeResponse = {
   }>;
 };
 
-type CachedIndex = {
+type CachedSourceIndex = {
+  sourceId: string;
   fetchedAt: number;
   items: MarketplaceSkill[];
+  error?: string;
 };
 
-type MarketplaceCacheFile = {
+type CachedIndex = {
+  fetchedAt: number;
+  sourceIndexes: Record<string, CachedSourceIndex>;
+};
+
+type MarketplaceCacheFileV1 = {
   version: 1;
   fetchedAt: number;
   items: MarketplaceSkill[];
 };
 
+type MarketplaceCacheFileV2 = {
+  version: 2;
+  fetchedAt: number;
+  sourceIndexes: Record<string, CachedSourceIndex>;
+};
+
 export class SkillMarketplace {
   private cachedIndex: CachedIndex | null = null;
   private readonly cachedSearchResults = new Map<string, MarketplaceSearchResult>();
-  private readonly cachePath = getMarketplaceCachePath();
+
+  constructor(private readonly cachePath = getMarketplaceCachePath()) {}
 
   async search(input: MarketplaceSearchInput = {}): Promise<MarketplaceSearchResult> {
     const query = normalizeQuery(input.query);
     const limit = normalizeLimit(input.limit);
-    const cacheKey = `${query}:${limit}`;
+    const sourceId = normalizeSourceId(input.sourceId ?? legacySourceToSourceId(input.source));
+    const cacheKey = `${query}:${sourceId}:${limit}`;
     const cachedSearch = this.cachedSearchResults.get(cacheKey);
     if (cachedSearch) {
       return cachedSearch;
     }
 
-    const topicLimit = query ? Math.min(36, limit) : 0;
-    const [indexedSkills, topicSkills] = await Promise.all([
-      this.getIndexedSkills(),
-      topicLimit > 0 ? searchGitHubTopicSkills(query, topicLimit) : Promise.resolve([])
-    ]);
-    const items = mergeMarketplaceItems([...filterMarketplaceSkills(indexedSkills, query), ...topicSkills])
+    const cachedIndex = await this.getCachedIndex();
+    const indexedSkills = filterMarketplaceSkills(filterBySource(this.flattenCachedItems(cachedIndex), sourceId), query);
+    const topicLimit = shouldSearchGitHubTopic(query, sourceId) ? Math.min(36, limit) : 0;
+    const topicSkills = topicLimit > 0 ? await searchGitHubTopicSkills(query, topicLimit) : [];
+    const items = mergeMarketplaceItems([...indexedSkills, ...topicSkills])
       .sort(compareMarketplaceSkills)
       .slice(0, limit);
 
-    const result = {
-      sources: marketplaceSources,
+    const result: MarketplaceSearchResult = {
+      sources: this.buildSourceViews(cachedIndex),
       items,
       fetchedAt: new Date().toISOString()
     };
@@ -138,38 +160,117 @@ export class SkillMarketplace {
     return result;
   }
 
-  private async getIndexedSkills(): Promise<MarketplaceSkill[]> {
+  async refreshSource(sourceId: string, input: MarketplaceSearchInput = {}): Promise<MarketplaceSearchResult> {
+    const source = indexedGitHubSources.find((candidate) => candidate.id === sourceId);
+    if (!source) {
+      throw new Error("这个来源不支持自动索引，只能打开网站或通过搜索查看。");
+    }
+
+    const cachedIndex = await this.getCachedIndex();
+    try {
+      const items = await indexGitHubSkillSource(source);
+      cachedIndex.sourceIndexes[source.id] = {
+        sourceId: source.id,
+        fetchedAt: Date.now(),
+        items
+      };
+    } catch (error) {
+      cachedIndex.sourceIndexes[source.id] = {
+        sourceId: source.id,
+        fetchedAt: Date.now(),
+        items: [],
+        error: error instanceof Error ? error.message : "索引来源失败。"
+      };
+    }
+
+    cachedIndex.fetchedAt = Date.now();
+    this.cachedIndex = cachedIndex;
+    this.cachedSearchResults.clear();
+    await this.writeDiskCache(cachedIndex);
+    return this.search({ ...input, sourceId });
+  }
+
+  private async getCachedIndex(): Promise<CachedIndex> {
     if (this.cachedIndex && Date.now() - this.cachedIndex.fetchedAt < CACHE_TTL_MS) {
-      return this.cachedIndex.items;
+      return this.cachedIndex;
     }
 
     const diskCache = await this.readDiskCache();
     if (diskCache && Date.now() - diskCache.fetchedAt < CACHE_TTL_MS) {
       this.cachedIndex = diskCache;
-      return diskCache.items;
+      return diskCache;
     }
 
-    const settled = await Promise.allSettled(indexedGitHubSources.map((source) => indexGitHubSkillSource(source)));
-    const items = settled.flatMap((result) => (result.status === "fulfilled" ? result.value : []));
     this.cachedIndex = {
       fetchedAt: Date.now(),
-      items
+      sourceIndexes: diskCache?.sourceIndexes ?? {}
     };
-    await this.writeDiskCache(this.cachedIndex);
-    return items;
+    return this.cachedIndex;
+  }
+
+  private flattenCachedItems(cache: CachedIndex): MarketplaceSkill[] {
+    return Object.values(cache.sourceIndexes).flatMap((sourceIndex) => sourceIndex.items);
+  }
+
+  private buildSourceViews(cache: CachedIndex): MarketplaceSourceView[] {
+    return marketplaceSources.map((source) => {
+      const canIndex = indexedSourceIds.has(source.id);
+      const sourceIndex = cache.sourceIndexes[source.id];
+
+      if (!canIndex) {
+        return {
+          ...source,
+          canIndex,
+          indexedCount: 0,
+          status: "external"
+        };
+      }
+
+      if (!sourceIndex) {
+        return {
+          ...source,
+          canIndex,
+          indexedCount: 0,
+          status: "not-indexed"
+        };
+      }
+
+      if (sourceIndex.error) {
+        return {
+          ...source,
+          canIndex,
+          indexedCount: sourceIndex.items.length,
+          status: "error",
+          error: sourceIndex.error,
+          lastIndexedAt: new Date(sourceIndex.fetchedAt).toISOString()
+        };
+      }
+
+      return {
+        ...source,
+        canIndex,
+        indexedCount: sourceIndex.items.length,
+        status: sourceIndex.items.length > 0 ? "ready" : "empty",
+        lastIndexedAt: new Date(sourceIndex.fetchedAt).toISOString()
+      };
+    });
   }
 
   private async readDiskCache(): Promise<CachedIndex | null> {
     try {
-      const cache = JSON.parse(await fs.readFile(this.cachePath, "utf8")) as MarketplaceCacheFile;
-      if (cache.version !== 1 || !Array.isArray(cache.items) || !Number.isFinite(cache.fetchedAt)) {
-        return null;
+      const raw = JSON.parse(await fs.readFile(this.cachePath, "utf8")) as MarketplaceCacheFileV1 | MarketplaceCacheFileV2;
+      if (raw.version === 2 && raw.sourceIndexes && Number.isFinite(raw.fetchedAt)) {
+        return {
+          fetchedAt: raw.fetchedAt,
+          sourceIndexes: raw.sourceIndexes
+        };
       }
 
-      return {
-        fetchedAt: cache.fetchedAt,
-        items: cache.items
-      };
+      if (raw.version === 1 && Array.isArray(raw.items) && Number.isFinite(raw.fetchedAt)) {
+        return migrateV1Cache(raw);
+      }
+
+      return null;
     } catch {
       return null;
     }
@@ -180,13 +281,40 @@ export class SkillMarketplace {
       await fs.mkdir(path.dirname(this.cachePath), { recursive: true });
       await fs.writeFile(
         this.cachePath,
-        `${JSON.stringify({ version: 1, fetchedAt: cache.fetchedAt, items: cache.items }, null, 2)}\n`,
+        `${JSON.stringify({ version: 2, fetchedAt: cache.fetchedAt, sourceIndexes: cache.sourceIndexes }, null, 2)}\n`,
         "utf8"
       );
     } catch {
       // The marketplace can still work without a persisted cache.
     }
   }
+}
+
+function migrateV1Cache(cache: MarketplaceCacheFileV1): CachedIndex {
+  const sourceIndexes: Record<string, CachedSourceIndex> = {};
+  for (const item of cache.items) {
+    const source = indexedGitHubSources.find((candidate) => candidate.name === item.sourceName);
+    if (!source) {
+      continue;
+    }
+
+    const normalizedItem = {
+      ...item,
+      sourceId: item.sourceId ?? source.id
+    };
+    const sourceIndex = sourceIndexes[source.id] ?? {
+      sourceId: source.id,
+      fetchedAt: cache.fetchedAt,
+      items: []
+    };
+    sourceIndex.items.push(normalizedItem);
+    sourceIndexes[source.id] = sourceIndex;
+  }
+
+  return {
+    fetchedAt: cache.fetchedAt,
+    sourceIndexes
+  };
 }
 
 async function indexGitHubSkillSource(source: IndexedGitHubSource): Promise<MarketplaceSkill[]> {
@@ -213,6 +341,7 @@ function toIndexedMarketplaceSkill(
     name,
     description,
     repository: repository.full_name,
+    sourceId: source.id,
     sourceName: source.name,
     sourceUrl: githubTreeUrl(repository.html_url, repository.default_branch, skillDirectory),
     installUrl: githubTreeUrl(repository.html_url, repository.default_branch, skillDirectory),
@@ -298,6 +427,7 @@ function toTopicMarketplaceSkill(repo: GitHubSearchRepository): MarketplaceSkill
     name: repo.full_name,
     description: repo.description?.trim() || "暂无描述。安装前会继续识别仓库内的 SKILL.md。",
     repository: repo.full_name,
+    sourceId: GITHUB_TOPIC_SOURCE_ID,
     sourceName: "GitHub Topic",
     sourceUrl: repo.html_url,
     installUrl: repo.html_url,
@@ -350,6 +480,14 @@ function filterMarketplaceSkills(items: MarketplaceSkill[], query: string): Mark
     const haystack = `${item.name} ${item.description} ${item.repository} ${item.sourceName} ${item.tags.join(" ")}`.toLowerCase();
     return tokens.every((token) => haystack.includes(token));
   });
+}
+
+function filterBySource(items: MarketplaceSkill[], sourceId: string): MarketplaceSkill[] {
+  if (sourceId === "all") {
+    return items;
+  }
+
+  return items.filter((item) => item.sourceId === sourceId);
 }
 
 function mergeMarketplaceItems(items: MarketplaceSkill[]): MarketplaceSkill[] {
@@ -421,6 +559,26 @@ function githubTreeUrl(repositoryUrl: string, ref: string, directory: string): s
     .split("/")
     .map((part) => encodeURIComponent(part))
     .join("/")}`;
+}
+
+function shouldSearchGitHubTopic(query: string, sourceId: string): boolean {
+  return Boolean(query) && (sourceId === "all" || sourceId === GITHUB_TOPIC_SOURCE_ID);
+}
+
+function normalizeSourceId(sourceId: string | undefined): string {
+  if (!sourceId || sourceId === "all") {
+    return "all";
+  }
+
+  return marketplaceSources.some((source) => source.id === sourceId) ? sourceId : "all";
+}
+
+function legacySourceToSourceId(source: MarketplaceSearchInput["source"]): string | undefined {
+  if (source === "github-topic") {
+    return GITHUB_TOPIC_SOURCE_ID;
+  }
+
+  return source === "all" ? "all" : undefined;
 }
 
 function normalizeQuery(query: string | undefined): string {

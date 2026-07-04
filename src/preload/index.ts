@@ -20,6 +20,8 @@ const skills: SkillsApi = {
   cancelGitHubDiscovery: (requestId: string) => ipcRenderer.invoke("skills:cancelGitHubDiscovery", requestId),
   importGitHubUrls: (githubUrls: string[]) => ipcRenderer.invoke("skills:importGitHubUrls", githubUrls),
   searchMarketplace: (input?: MarketplaceSearchInput) => ipcRenderer.invoke("skills:searchMarketplace", input),
+  refreshMarketplaceSource: (sourceId: string, input?: MarketplaceSearchInput) =>
+    ipcRenderer.invoke("skills:refreshMarketplaceSource", sourceId, input),
   importLocalSkills: () => ipcRenderer.invoke("skills:importLocalSkills"),
   repairBrokenSkills: () => ipcRenderer.invoke("skills:repairBrokenSkills"),
   selectFolder: (): Promise<string | null> => ipcRenderer.invoke("skills:selectFolder"),

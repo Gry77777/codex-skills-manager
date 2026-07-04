@@ -106,11 +106,22 @@ export type MarketplaceSource = {
   tags: string[];
 };
 
+export type MarketplaceSourceStatus = "external" | "not-indexed" | "indexing" | "ready" | "empty" | "error";
+
+export type MarketplaceSourceView = MarketplaceSource & {
+  status: MarketplaceSourceStatus;
+  indexedCount: number;
+  canIndex: boolean;
+  lastIndexedAt?: string;
+  error?: string;
+};
+
 export type MarketplaceSkill = {
   id: string;
   name: string;
   description: string;
   repository: string;
+  sourceId: string;
   sourceName: string;
   sourceUrl: string;
   installUrl: string;
@@ -123,12 +134,13 @@ export type MarketplaceSkill = {
 
 export type MarketplaceSearchInput = {
   query?: string;
+  sourceId?: string;
   source?: "all" | "github-topic";
   limit?: number;
 };
 
 export type MarketplaceSearchResult = {
-  sources: MarketplaceSource[];
+  sources: MarketplaceSourceView[];
   items: MarketplaceSkill[];
   fetchedAt: string;
 };
@@ -261,6 +273,7 @@ export type SkillsApi = {
   cancelGitHubDiscovery: (requestId: string) => Promise<void>;
   importGitHubUrls: (githubUrls: string[]) => Promise<SkillRecord[]>;
   searchMarketplace: (input?: MarketplaceSearchInput) => Promise<MarketplaceSearchResult>;
+  refreshMarketplaceSource: (sourceId: string, input?: MarketplaceSearchInput) => Promise<MarketplaceSearchResult>;
   importLocalSkills: () => Promise<BulkImportSummary>;
   repairBrokenSkills: () => Promise<SkillRepairSummary>;
   selectFolder: () => Promise<string | null>;

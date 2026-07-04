@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, ipcMain } from "electron";
+import { app, BrowserWindow, Menu, ipcMain, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AiController } from "./ai-controller.js";
@@ -33,6 +33,14 @@ function createWindow(): void {
   } else {
     void mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
   }
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https://") || url.startsWith("http://")) {
+      void shell.openExternal(url);
+    }
+
+    return { action: "deny" };
+  });
 }
 
 app.whenReady().then(() => {
@@ -80,6 +88,9 @@ function registerIpc(): void {
   });
   ipcMain.handle("skills:importGitHubUrls", (_event, githubUrls: string[]) => controller.importGitHubUrls(githubUrls));
   ipcMain.handle("skills:searchMarketplace", (_event, input) => controller.searchMarketplace(input));
+  ipcMain.handle("skills:refreshMarketplaceSource", (_event, sourceId: string, input) =>
+    controller.refreshMarketplaceSource(sourceId, input)
+  );
   ipcMain.handle("skills:importLocalSkills", () => controller.importLocalSkills());
   ipcMain.handle("skills:repairBrokenSkills", () => controller.repairBrokenSkills());
   ipcMain.handle("skills:selectFolder", () => controller.selectFolder());

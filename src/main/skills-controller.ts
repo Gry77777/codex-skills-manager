@@ -112,6 +112,14 @@ export class SkillsController {
     return this.marketplace.search(input);
   }
 
+  async refreshMarketplaceSource(sourceId: string, input?: MarketplaceSearchInput): Promise<MarketplaceSearchResult> {
+    if (typeof sourceId !== "string" || sourceId.trim() === "") {
+      throw new Error("缺少要刷新的技能广场来源。");
+    }
+
+    return this.marketplace.refreshSource(sourceId, input);
+  }
+
   async importLocalSkills(): Promise<BulkImportSummary> {
     const roots = getSkillRoots();
     const summary = await this.importer.importLocalSkills([
