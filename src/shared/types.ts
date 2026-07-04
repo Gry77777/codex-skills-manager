@@ -238,6 +238,7 @@ export type AiBatchAnalysisResult = {
 };
 
 export type AiBatchAnalysisProgress = {
+  requestId?: string;
   stage: "preparing" | "analyzing" | "analyzed" | "skipped" | "failed" | "complete";
   total: number;
   completed: number;

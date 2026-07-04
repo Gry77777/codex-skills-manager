@@ -72,6 +72,8 @@ type SkillUsageStats = {
   analyses: number;
   lastUsedAt?: string;
 };
+
+const AI_BATCH_SIZE = 24;
 type ConfirmTone = "repair" | "enable" | "disable" | "warning";
 
 type ConfirmDialogRequest = {
@@ -491,6 +493,30 @@ function getAiPriorityScore(record: AiSkillAnalysisRecord | null): number {
   );
 }
 
+function formatAiBatchFailures(failures: AiBatchAnalysisResult["failed"]): string {
+  if (failures.length === 0) {
+    return "";
+  }
+
+  const grouped = failures.reduce<Map<string, number>>((accumulator, failure) => {
+    const normalizedReason = failure.reason.trim() || "AI 识别失败。";
+    accumulator.set(normalizedReason, (accumulator.get(normalizedReason) ?? 0) + 1);
+    return accumulator;
+  }, new Map<string, number>());
+
+  return [...grouped.entries()]
+    .map(([reason, count]) => (count > 1 ? `${count} 个技能：${reason}` : reason))
+    .join("；");
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
+
 function getHeatScore(
   skill: SkillRecord,
   aiAnalysisRecords: Record<string, AiSkillAnalysisRecord>,
@@ -751,6 +777,8 @@ export function App(): JSX.Element {
   const [aiAnalysisRecords, setAiAnalysisRecords] = useState<Record<string, AiSkillAnalysisRecord>>({});
   const [isAnalyzingPage, setIsAnalyzingPage] = useState(false);
   const [aiAnalysisProgress, setAiAnalysisProgress] = useState<AiBatchAnalysisProgress | null>(null);
+  const [isAnalyzingImports, setIsAnalyzingImports] = useState(false);
+  const [importAiAnalysisProgress, setImportAiAnalysisProgress] = useState<AiBatchAnalysisProgress | null>(null);
   const [pendingAiAnalysisSkills, setPendingAiAnalysisSkills] = useState<SkillRecord[] | null>(null);
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogRequest | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -758,6 +786,9 @@ export function App(): JSX.Element {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const githubDiscoveryRequestIdRef = useRef<string | null>(null);
   const aiAnalysisRequestIdRef = useRef<string | null>(null);
+  const importAiAnalysisRequestIdRef = useRef<string | null>(null);
+  const importAiQueueRef = useRef<Set<string>>(new Set());
+  const isImportAiQueueRunningRef = useRef(false);
   const confirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
 
   const selectedSkill = useMemo(
@@ -824,7 +855,11 @@ export function App(): JSX.Element {
     let unsubscribe: (() => void) | null = null;
     try {
       unsubscribe = getAiApi().onAnalyzeSkillsProgress((progress) => {
-        setAiAnalysisProgress(progress);
+        if (progress.requestId && progress.requestId === importAiAnalysisRequestIdRef.current) {
+          setImportAiAnalysisProgress(progress);
+        } else {
+          setAiAnalysisProgress(progress);
+        }
         const record = progress.record;
         if (record) {
           setAiAnalysisRecords((current) => ({ ...current, [record.skillId]: record }));
@@ -1113,7 +1148,7 @@ export function App(): JSX.Element {
       }
       setNotice(`AI 识别完成：新增 ${result.analyzed.length} 个，跳过 ${result.skipped.length} 个，失败 ${result.failed.length} 个。`);
       if (result.failed.length > 0) {
-        setError(result.failed.map((item) => item.reason).join("；"));
+        setError(formatAiBatchFailures(result.failed));
       }
     } catch (analysisError) {
       if (aiAnalysisRequestIdRef.current !== requestId) {
@@ -1168,6 +1203,104 @@ export function App(): JSX.Element {
       }
       return next;
     });
+  }
+
+  function enqueueImportedAiAnalysis(targetSkills: SkillRecord[]): void {
+    const targetIds = targetSkills.filter((skill) => skill.valid).map((skill) => skill.id);
+    if (targetIds.length === 0) {
+      return;
+    }
+
+    for (const id of targetIds) {
+      importAiQueueRef.current.add(id);
+    }
+
+    void runImportAiAnalysisQueue();
+  }
+
+  async function runImportAiAnalysisQueue(): Promise<void> {
+    if (isImportAiQueueRunningRef.current) {
+      return;
+    }
+
+    isImportAiQueueRunningRef.current = true;
+    setIsAnalyzingImports(true);
+    let analyzedCount = 0;
+    let skippedCount = 0;
+    const failures: AiBatchAnalysisResult["failed"] = [];
+
+    try {
+      const settings = await getAiApi().getSettings();
+      setAiSettings(settings);
+      if (!settings.enabled || !settings.hasApiKey) {
+        importAiQueueRef.current.clear();
+        setImportAiAnalysisProgress(null);
+        return;
+      }
+
+      while (importAiQueueRef.current.size > 0) {
+        const queuedIds = [...importAiQueueRef.current];
+        importAiQueueRef.current.clear();
+        const latestSkills = await getSkillsApi().list();
+        const latestCache = await getAiApi().getAnalysisCache();
+        setAiAnalysisRecords(latestCache.records);
+        const queuedIdSet = new Set(queuedIds);
+        const targetSkills = latestSkills.filter(
+          (skill) => queuedIdSet.has(skill.id) && skill.valid && latestCache.records[skill.id]?.skillHash !== skill.hash
+        );
+        skippedCount += queuedIds.length - targetSkills.length;
+
+        for (const batch of chunkArray(targetSkills, AI_BATCH_SIZE)) {
+          const requestId = createOperationId("import-ai-analysis");
+          importAiAnalysisRequestIdRef.current = requestId;
+          setImportAiAnalysisProgress({
+            requestId,
+            stage: "preparing",
+            total: batch.length,
+            completed: 0,
+            analyzed: 0,
+            skipped: 0,
+            failed: 0,
+            message: `后台准备识别 ${batch.length} 个刚导入的技能。`
+          });
+
+          const result = await getAiApi().analyzeSkills(batch.map((skill) => skill.id), requestId);
+          applyAiBatchResult(result);
+          for (const record of result.analyzed) {
+            recordSkillUsage(record.skillId, "analyses");
+          }
+          analyzedCount += result.analyzed.length;
+          skippedCount += result.skipped.length;
+          failures.push(...result.failed);
+        }
+      }
+
+      if (analyzedCount > 0 || skippedCount > 0 || failures.length > 0) {
+        setNotice(`导入后台 AI 识别完成：新增 ${analyzedCount} 个，跳过 ${skippedCount} 个，失败 ${failures.length} 个。`);
+      }
+      if (failures.length > 0) {
+        setError(formatAiBatchFailures(failures));
+      }
+    } catch (analysisError) {
+      setError(analysisError instanceof Error ? `导入成功，但后台 AI 识别失败：${analysisError.message}` : "导入成功，但后台 AI 识别失败。");
+    } finally {
+      importAiAnalysisRequestIdRef.current = null;
+      isImportAiQueueRunningRef.current = false;
+      setIsAnalyzingImports(false);
+      setImportAiAnalysisProgress((current) =>
+        current
+          ? {
+              ...current,
+              stage: "complete",
+              message: "导入后台 AI 识别已结束。"
+            }
+          : current
+      );
+
+      if (importAiQueueRef.current.size > 0) {
+        void runImportAiAnalysisQueue();
+      }
+    }
   }
 
   function recordSkillUsage(skillId: string, action: SkillUsageAction): void {
@@ -1233,10 +1366,16 @@ export function App(): JSX.Element {
         return;
       }
 
-      await getSkillsApi().importFolder(folderPath);
-      setSkills(await getSkillsApi().scan());
+      const imported = await getSkillsApi().importFolder(folderPath);
+      const scanned = await getSkillsApi().scan();
+      setSkills(scanned);
       setStatusFilter("disabled");
-      setNotice("已导入，默认关闭。");
+      enqueueImportedAiAnalysis(scanned.filter((skill) => skill.id === imported.id));
+      setNotice(
+        aiSettings?.enabled && aiSettings.hasApiKey
+          ? "已导入，默认关闭；后台 AI 正在识别并缓存内容。"
+          : "已导入，默认关闭。AI 接入未启用时不会自动识别。"
+      );
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : "导入技能失败。");
     } finally {
@@ -1300,8 +1439,15 @@ export function App(): JSX.Element {
       return;
     }
 
+    const indexedCount =
+      marketplaceResult?.items.filter((item) => item.sourceName === source.name).length ?? 0;
+    if (indexedCount === 0) {
+      await installMarketplaceUrl(source.id, source.url);
+      return;
+    }
+
     setMarketplaceSourceFilter(source.id);
-    setNotice(`已切换到「${source.name}」来源。这里使用本地索引立即展示，安装具体技能时才会读取并校验 SKILL.md。`);
+    setNotice(`已切换到「${source.name}」来源，当前有 ${indexedCount} 个本地索引候选。安装具体技能时才会读取并校验 SKILL.md。`);
   }
 
   async function installMarketplaceUrl(id: string, url: string): Promise<void> {
@@ -1479,14 +1625,21 @@ export function App(): JSX.Element {
 
     try {
       const imported = await getSkillsApi().importGitHubUrls(sourceUrls);
-      setSkills(await getSkillsApi().scan());
+      const scanned = await getSkillsApi().scan();
+      setSkills(scanned);
       setSourceFilter("imported");
       setStatusFilter("disabled");
       setGithubUrlInput("");
       setGithubDiscovery(null);
       setSelectedGitHubCandidateIds([]);
       setIsGitHubDialogOpen(false);
-      setNotice(`已从 GitHub 导入 ${imported.length} 个技能。远程导入默认关闭，打开后即可使用。`);
+      const importedIds = new Set(imported.map((skill) => skill.id));
+      enqueueImportedAiAnalysis(scanned.filter((skill) => importedIds.has(skill.id)));
+      setNotice(
+        aiSettings?.enabled && aiSettings.hasApiKey
+          ? `已从 GitHub 导入 ${imported.length} 个技能。远程导入默认关闭；后台 AI 正在识别并缓存内容。`
+          : `已从 GitHub 导入 ${imported.length} 个技能。远程导入默认关闭，打开后即可使用。`
+      );
     } catch (githubError) {
       setError(githubError instanceof Error ? githubError.message : "从 GitHub 导入技能失败。");
     } finally {
@@ -1519,11 +1672,17 @@ export function App(): JSX.Element {
 
     try {
       const summary = await getSkillsApi().importLocalSkills();
-      setSkills(await getSkillsApi().scan());
+      const scanned = await getSkillsApi().scan();
+      setSkills(scanned);
       setSourceFilter("imported");
       setStatusFilter("all");
+      if (summary.imported > 0 || summary.synced > 0) {
+        enqueueImportedAiAnalysis(scanned.filter((skill) => skill.source === "imported"));
+      }
       setNotice(
-        `整理完成：新增 ${summary.imported} 个，同步 ${summary.synced} 个，跳过 ${summary.skipped} 个，失败 ${summary.failed} 个。已导入的技能会保留原始开关状态，不会关闭原技能。`
+        aiSettings?.enabled && aiSettings.hasApiKey
+          ? `整理完成：新增 ${summary.imported} 个，同步 ${summary.synced} 个，跳过 ${summary.skipped} 个，失败 ${summary.failed} 个。后台 AI 会自动补充未缓存的技能说明。`
+          : `整理完成：新增 ${summary.imported} 个，同步 ${summary.synced} 个，跳过 ${summary.skipped} 个，失败 ${summary.failed} 个。已导入的技能会保留原始开关状态，不会关闭原技能。`
       );
     } catch (manageError) {
       setError(manageError instanceof Error ? manageError.message : "整理本机技能失败。");
@@ -1743,6 +1902,8 @@ export function App(): JSX.Element {
             aiAnalysisRecords={aiAnalysisRecords}
             isAnalyzingPage={isAnalyzingPage}
             aiAnalysisProgress={aiAnalysisProgress}
+            isAnalyzingImports={isAnalyzingImports}
+            importAiAnalysisProgress={importAiAnalysisProgress}
             onSelect={(id) => {
               setSelectedId(id);
               recordSkillUsage(id, "views");
@@ -1918,6 +2079,8 @@ function SkillsGrid({
   aiAnalysisRecords,
   isAnalyzingPage,
   aiAnalysisProgress,
+  isAnalyzingImports,
+  importAiAnalysisProgress,
   onSelect,
   onStatusChange,
   onAnalyzePage,
@@ -1943,6 +2106,8 @@ function SkillsGrid({
   aiAnalysisRecords: Record<string, AiSkillAnalysisRecord>;
   isAnalyzingPage: boolean;
   aiAnalysisProgress: AiBatchAnalysisProgress | null;
+  isAnalyzingImports: boolean;
+  importAiAnalysisProgress: AiBatchAnalysisProgress | null;
   onSelect: (id: string) => void;
   onStatusChange: (skill: SkillRecord, status: SettableSkillStatus) => Promise<void>;
   onAnalyzePage: () => Promise<void>;
@@ -2069,6 +2234,12 @@ function SkillsGrid({
       </div>
 
       <AiBatchProgressPanel progress={aiAnalysisProgress} isActive={isAnalyzingPage} onCancel={onCancelAnalysis} />
+      <AiBatchProgressPanel
+        progress={importAiAnalysisProgress}
+        isActive={isAnalyzingImports}
+        title="后台识别导入技能"
+        description="导入完成后自动读取 SKILL.md，生成中文摘要、标签、风险和启用建议；只写入本机 AI 缓存，不会自动打开技能。"
+      />
 
       <div className="skill-grid" role="list">
         {skills.map((skill, index) => (
@@ -2092,11 +2263,15 @@ function SkillsGrid({
 function AiBatchProgressPanel({
   progress,
   isActive,
+  title = "AI 识别技能内容",
+  description = "读取 SKILL.md 后生成中文作用、标签、风险提示和启用建议；只更新管理器里的识别缓存，不会自动打开或关闭技能。",
   onCancel
 }: {
   progress: AiBatchAnalysisProgress | null;
   isActive: boolean;
-  onCancel: () => void;
+  title?: string;
+  description?: string;
+  onCancel?: () => void;
 }): JSX.Element | null {
   if (!progress) {
     return null;
@@ -2122,10 +2297,8 @@ function AiBatchProgressPanel({
       <div className="ai-batch-progress-main">
         <div className="ai-batch-copy">
           <span>{stageLabel[progress.stage]}</span>
-          <h3>AI 识别技能内容</h3>
-          <p>
-            读取 SKILL.md 后生成中文作用、标签、风险提示和启用建议；只更新管理器里的识别缓存，不会自动打开或关闭技能。
-          </p>
+          <h3>{title}</h3>
+          <p>{description}</p>
         </div>
         <div className="ai-batch-current">
           <span>当前</span>
@@ -2150,7 +2323,7 @@ function AiBatchProgressPanel({
           <span>新增 {progress.analyzed}</span>
           <span>跳过 {progress.skipped}</span>
           <span>失败 {progress.failed}</span>
-          {isActive ? (
+          {isActive && onCancel ? (
             <button className="ai-batch-cancel" type="button" onClick={onCancel}>
               停止识别
             </button>
@@ -2246,11 +2419,17 @@ function SkillCard({
       }}
     >
       <div className="skill-card-topline">
-        <div className="skill-card-type">
+        <div className="skill-card-identity">
           <SkillAvatar skill={skill} />
-          <div className="skill-card-kicker">
-            <span className={`source-pill source-${skill.source}`}>{getSourceLabel(skill)}</span>
-            <span className="skill-visual-label">{visual.label}</span>
+          <div className="skill-card-title-block">
+            <div className="skill-card-name-row">
+              <h3 title={skill.name}>{skill.name}</h3>
+              {skill.valid && skill.status === "enabled" ? <CheckCircle2 aria-hidden="true" size={15} /> : null}
+            </div>
+            <div className="skill-card-kicker">
+              <span className={`source-pill source-${skill.source}`}>{getSourceLabel(skill)}</span>
+              <span className="skill-visual-label">{visual.label}</span>
+            </div>
           </div>
         </div>
         <div className="skill-card-action" onClick={(event) => event.stopPropagation()}>
@@ -2258,13 +2437,11 @@ function SkillCard({
         </div>
       </div>
 
-      <div className="skill-card-name-row">
-        <h3 title={skill.name}>{skill.name}</h3>
-        {skill.valid && skill.status === "enabled" ? <CheckCircle2 aria-hidden="true" size={15} /> : null}
-      </div>
-
       <div className="skill-purpose">
-        <span>作用</span>
+        <div className="skill-purpose-label">
+          <FileText aria-hidden="true" size={13} />
+          <span>作用</span>
+        </div>
         <p>{summary}</p>
       </div>
 
@@ -2614,6 +2791,9 @@ function MarketplaceDialog({
   const items = result?.items ?? [];
   const selectedSource = sources.find((source) => source.id === sourceFilter);
   const visibleItems = selectedSource ? items.filter((item) => item.sourceName === selectedSource.name) : items;
+  const selectedSourceItemCount = selectedSource
+    ? items.filter((item) => item.sourceName === selectedSource.name).length
+    : items.length;
   const totalStars = items.reduce((total, item) => total + (item.stars ?? 0), 0);
 
   function submitSearch(event: FormEvent<HTMLFormElement>): void {
@@ -2702,6 +2882,7 @@ function MarketplaceDialog({
                 <MarketplaceSourceCard
                   key={source.id}
                   source={source}
+                  indexedCount={items.filter((item) => item.sourceName === source.name).length}
                   isBusy={isBusy}
                   isInstalling={installingId === source.id}
                   isActive={sourceFilter === source.id}
@@ -2740,8 +2921,23 @@ function MarketplaceDialog({
             ) : (
               <div className="marketplace-empty" role="status">
                 <Package aria-hidden="true" size={28} />
-                <strong>{isSearching ? "正在搜索..." : "暂无搜索结果"}</strong>
-                <span>换一个关键词，或直接从内置来源识别 GitHub 仓库。</span>
+                <strong>{isSearching ? "正在搜索..." : selectedSource ? "这个来源暂无本地索引结果" : "暂无搜索结果"}</strong>
+                <span>
+                  {selectedSource
+                    ? "快速索引没有在这个来源里找到可直接展示的 SKILL.md。可以手动扫描来源，或打开来源网站确认目录结构。"
+                    : "换一个关键词，或直接从内置来源识别 GitHub 仓库。"}
+                </span>
+                {selectedSource?.url.startsWith("https://github.com/") && selectedSourceItemCount === 0 ? (
+                  <button
+                    className="button primary"
+                    type="button"
+                    onClick={() => onInstallSource(selectedSource)}
+                    disabled={isBusy}
+                  >
+                    <Github aria-hidden="true" size={17} />
+                    扫描这个来源
+                  </button>
+                ) : null}
               </div>
             )}
           </section>
@@ -2753,18 +2949,21 @@ function MarketplaceDialog({
 
 function MarketplaceSourceCard({
   source,
+  indexedCount,
   isBusy,
   isInstalling,
   isActive,
   onInstall
 }: {
   source: MarketplaceSource;
+  indexedCount: number;
   isBusy: boolean;
   isInstalling: boolean;
   isActive: boolean;
   onInstall: () => void;
 }): JSX.Element {
   const canInstall = source.url.startsWith("https://github.com/");
+  const canScanActiveEmptySource = canInstall && isActive && indexedCount === 0;
   const sourceIcon = source.kind === "codex" ? <Code2 aria-hidden="true" size={18} /> : source.kind === "github-topic" ? <Github aria-hidden="true" size={18} /> : <Globe2 aria-hidden="true" size={18} />;
 
   return (
@@ -2783,10 +2982,19 @@ function MarketplaceSourceCard({
         {source.tags.map((tag) => (
           <span key={tag}>{tag}</span>
         ))}
+        <span>{indexedCount} 已索引</span>
       </div>
-      <button className="mini-action" type="button" onClick={onInstall} disabled={isBusy || isActive}>
+      <button className="mini-action" type="button" onClick={onInstall} disabled={isBusy || (isActive && !canScanActiveEmptySource)}>
         {canInstall ? <Github aria-hidden="true" size={15} /> : <ExternalLink aria-hidden="true" size={15} />}
-        {isInstalling ? "处理中..." : canInstall ? (isActive ? "正在查看" : "查看已索引") : "打开网站"}
+        {isInstalling
+          ? "处理中..."
+          : canInstall
+            ? indexedCount === 0
+              ? "扫描来源"
+              : isActive
+                ? "正在查看"
+                : "查看已索引"
+            : "打开网站"}
       </button>
     </article>
   );

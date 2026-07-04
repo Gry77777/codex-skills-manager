@@ -99,7 +99,7 @@ function registerIpc(): void {
     try {
       return await aiController.analyzeSkills(skillIds, (progress) => {
         if (!event.sender.isDestroyed()) {
-          event.sender.send("ai:analyzeSkillsProgress", progress);
+          event.sender.send("ai:analyzeSkillsProgress", { ...progress, requestId });
         }
       }, abortController?.signal);
     } finally {

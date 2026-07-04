@@ -7,8 +7,14 @@ export type AiChatMessage = {
   content: string;
 };
 
+export type AiCompleteOptions = {
+  json?: boolean;
+  maxTokens?: number;
+  temperature?: number;
+};
+
 type AiClient = {
-  complete(messages: AiChatMessage[], signal?: AbortSignal): Promise<string>;
+  complete(messages: AiChatMessage[], signal?: AbortSignal, options?: AiCompleteOptions): Promise<string>;
 };
 
 type OpenAiChatCompletionResponse = {
@@ -44,25 +50,45 @@ export function createAiClient(settings: ResolvedAiSettings): AiClient {
 class OpenAiCompatibleClient implements AiClient {
   constructor(private readonly settings: ResolvedAiSettings) {}
 
-  async complete(messages: AiChatMessage[], signal?: AbortSignal): Promise<string> {
+  async complete(messages: AiChatMessage[], signal?: AbortSignal, options: AiCompleteOptions = {}): Promise<string> {
     const providerLabel = getAiProviderPreset(this.settings.provider).label;
-    const response = await fetch(`${this.settings.baseUrl}/chat/completions`, {
-      method: "POST",
-      signal,
-      headers: {
-        Authorization: `Bearer ${this.settings.apiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
+    const requestCompletion = async (
+      withJsonResponseFormat: boolean
+    ): Promise<{ response: Response; data: OpenAiChatCompletionResponse }> => {
+      const body: Record<string, unknown> = {
         model: this.settings.model,
         messages,
-        temperature: 0.2,
-        max_tokens: 900,
+        temperature: options.temperature ?? (options.json ? 0.1 : 0.2),
+        max_tokens: options.maxTokens ?? (options.json ? 1600 : 900),
         stream: false
-      })
-    });
+      };
 
-    const data = await readJsonResponse<OpenAiChatCompletionResponse>(response, providerLabel);
+      if (withJsonResponseFormat) {
+        body.response_format = { type: "json_object" };
+      }
+
+      const response = await fetch(`${this.settings.baseUrl}/chat/completions`, {
+        method: "POST",
+        signal,
+        headers: {
+          Authorization: `Bearer ${this.settings.apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+      const data = await readJsonResponse<OpenAiChatCompletionResponse>(response, providerLabel);
+      return { response, data };
+    };
+
+    let { response, data } = await requestCompletion(Boolean(options.json));
+    if (
+      options.json &&
+      !response.ok &&
+      shouldRetryWithoutJsonResponseFormat(response.status, data.error?.message)
+    ) {
+      ({ response, data } = await requestCompletion(false));
+    }
+
     if (!response.ok) {
       throw new Error(data.error?.message || `${providerLabel} 请求失败：${response.status} ${response.statusText}`);
     }
@@ -79,7 +105,7 @@ class OpenAiCompatibleClient implements AiClient {
 class AnthropicMessagesClient implements AiClient {
   constructor(private readonly settings: ResolvedAiSettings) {}
 
-  async complete(messages: AiChatMessage[], signal?: AbortSignal): Promise<string> {
+  async complete(messages: AiChatMessage[], signal?: AbortSignal, options: AiCompleteOptions = {}): Promise<string> {
     const providerLabel = getAiProviderPreset(this.settings.provider).label;
     const response = await fetch(resolveAnthropicMessagesUrl(this.settings.baseUrl), {
       method: "POST",
@@ -98,8 +124,8 @@ class AnthropicMessagesClient implements AiClient {
         messages: messages
           .filter((message) => message.role !== "system")
           .map((message) => ({ role: "user", content: message.content })),
-        temperature: 0.2,
-        max_tokens: 900,
+        temperature: options.temperature ?? (options.json ? 0.1 : 0.2),
+        max_tokens: options.maxTokens ?? (options.json ? 1600 : 900),
         stream: false
       })
     });
@@ -129,6 +155,14 @@ async function readJsonResponse<T>(response: Response, providerLabel: string): P
   } catch {
     throw new Error(`${providerLabel} 返回了无法解析的响应：${raw.slice(0, 180)}`);
   }
+}
+
+function shouldRetryWithoutJsonResponseFormat(status: number, message = ""): boolean {
+  if (status !== 400 && status !== 422) {
+    return false;
+  }
+
+  return /response_format|json[_ -]?object|json mode|unsupported|not support|invalid/i.test(message);
 }
 
 function resolveAnthropicMessagesUrl(baseUrl: string): string {

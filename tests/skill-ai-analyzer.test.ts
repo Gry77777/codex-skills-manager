@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AiSkillAnalysisInput } from "../src/shared/types.js";
-import { SkillAiAnalyzer } from "../src/main/skill-ai-analyzer.js";
+import { parseAiSkillAnalysis, SkillAiAnalyzer } from "../src/main/skill-ai-analyzer.js";
 
 describe("SkillAiAnalyzer", () => {
   afterEach(() => {
@@ -15,10 +15,15 @@ describe("SkillAiAnalyzer", () => {
         expect(init?.method).toBe("POST");
         expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer test-key");
 
-        const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ role: string; content: string }> };
+        const body = JSON.parse(String(init?.body)) as {
+          model: string;
+          messages: Array<{ role: string; content: string }>;
+          response_format?: { type?: string };
+        };
         expect(body.model).toBe("MiniMax-M3");
         expect(body.messages[0].role).toBe("system");
         expect(body.messages[1].content).toContain("SKILL.md 内容");
+        expect(body.response_format).toEqual({ type: "json_object" });
 
         return new Response(
           JSON.stringify({
@@ -156,4 +161,129 @@ describe("SkillAiAnalyzer", () => {
     expect(analysis.riskLevel).toBe("medium");
     expect(analysis.confidence).toBe(0.7);
   });
+
+  it("falls back when an OpenAI-compatible provider rejects JSON mode", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { response_format?: unknown };
+      if (body.response_format) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              message: "response_format is not supported by this model"
+            }
+          }),
+          { status: 400, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  summaryZh: "退回普通模式后仍能解析。",
+                  useCases: ["兼容中转站"],
+                  tags: ["兼容"],
+                  riskLevel: "low",
+                  risks: [],
+                  dependencies: [],
+                  managementAdvice: ["继续使用"],
+                  enableRecommendation: "review-first",
+                  confidence: 0.66
+                })
+              }
+            }
+          ]
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const analyzer = new SkillAiAnalyzer({
+      resolve: async () => ({
+        enabled: true,
+        provider: "custom-openai-compatible",
+        baseUrl: "https://proxy.example.com/v1",
+        model: "proxy-model",
+        hasApiKey: true,
+        keyStorage: "safe-storage",
+        apiKey: "test-key"
+      })
+    });
+
+    const analysis = await analyzer.analyzeSkill(makeInput("fallback-skill"));
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(analysis.summaryZh).toBe("退回普通模式后仍能解析。");
+    expect(analysis.confidence).toBe(0.66);
+  });
+
+  it("parses fenced, prose-wrapped, and lightly malformed JSON outputs", () => {
+    const fenced = parseAiSkillAnalysis(`\`\`\`json
+{
+  "summaryZh": "代码块里的 JSON 可以解析。",
+  "useCases": "单个场景也会归一化",
+  "tags": ["json"],
+  "riskLevel": "低风险",
+  "risks": [],
+  "dependencies": [],
+  "managementAdvice": [],
+  "enableRecommendation": "review-first",
+  "confidence": 0.9
+}
+\`\`\``);
+    expect(fenced.summaryZh).toBe("代码块里的 JSON 可以解析。");
+    expect(fenced.useCases).toEqual(["单个场景也会归一化"]);
+    expect(fenced.riskLevel).toBe("low");
+
+    const proseWrapped = parseAiSkillAnalysis(`下面是分析结果：
+{
+  "analysis": {
+    "summaryZh": "前后带说明文字也可以解析。",
+    "useCases": ["批量识别"],
+    "tags": ["AI"],
+    "riskLevel": "medium",
+    "risks": [],
+    "dependencies": [],
+    "managementAdvice": [],
+    "enableRecommendation": "review-first",
+    "confidence": 0.75
+  }
+}
+请查收。`);
+    expect(proseWrapped.summaryZh).toBe("前后带说明文字也可以解析。");
+
+    const trailingComma = parseAiSkillAnalysis(`{
+  "summaryZh": "尾逗号可以被轻量修复。",
+  "useCases": ["兼容模型输出"],
+  "tags": ["repair",],
+  "riskLevel": "high",
+  "risks": [],
+  "dependencies": [],
+  "managementAdvice": [],
+  "enableRecommendation": "keep-disabled",
+  "confidence": 0.8,
+}`);
+    expect(trailingComma.tags).toEqual(["repair"]);
+    expect(trailingComma.enableRecommendation).toBe("keep-disabled");
+  });
 });
+
+function makeInput(name: string): AiSkillAnalysisInput {
+  return {
+    skill: {
+      id: name,
+      name,
+      description: "Test skill",
+      summaryZh: "测试技能。",
+      source: "imported",
+      status: "disabled",
+      valid: true,
+      issues: [],
+      hash: `${name}-hash`
+    },
+    markdown: `---\nname: ${name}\ndescription: Test skill\n---\n`
+  };
+}
