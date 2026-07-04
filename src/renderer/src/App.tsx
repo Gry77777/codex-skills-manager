@@ -2802,11 +2802,11 @@ function MarketplaceDialog({
   onRefreshSource: (source: MarketplaceSourceView) => void;
 }): JSX.Element {
   const isBusy = isSearching || Boolean(installingId);
-  const sources = result?.sources ?? [];
   const items = result?.items ?? [];
+  const sources = normalizeMarketplaceSourceViews(result?.sources ?? [], items);
   const selectedSource = sources.find((source) => source.id === sourceFilter);
-  const visibleItems = selectedSource ? items.filter((item) => item.sourceId === selectedSource.id) : items;
-  const selectedSourceItemCount = selectedSource ? selectedSource.indexedCount : items.length;
+  const visibleItems = selectedSource ? items.filter((item) => isMarketplaceSkillFromSource(item, selectedSource)) : items;
+  const selectedSourceItemCount = selectedSource ? Math.max(selectedSource.indexedCount, visibleItems.length) : items.length;
   const totalStars = items.reduce((total, item) => total + (item.stars ?? 0), 0);
 
   function submitSearch(event: FormEvent<HTMLFormElement>): void {
@@ -2956,6 +2956,55 @@ function MarketplaceDialog({
       </section>
     </div>
   );
+}
+
+function normalizeMarketplaceSourceViews(sources: MarketplaceSourceView[], items: MarketplaceSkill[]): MarketplaceSourceView[] {
+  return sources.map((source) => {
+    const matchedItems = items.filter((item) => isMarketplaceSkillFromSource(item, source));
+    const canIndex = typeof source.canIndex === "boolean" ? source.canIndex : isIndexableMarketplaceSource(source);
+    const indexedCount = Number.isFinite(source.indexedCount) ? source.indexedCount : matchedItems.length;
+    const status = source.status ?? inferMarketplaceSourceStatus({ canIndex, indexedCount, source });
+
+    return {
+      ...source,
+      canIndex,
+      indexedCount,
+      status
+    };
+  });
+}
+
+function isMarketplaceSkillFromSource(skill: MarketplaceSkill, source: MarketplaceSourceView): boolean {
+  const runtimeSkill = skill as MarketplaceSkill & { sourceId?: string };
+  return runtimeSkill.sourceId === source.id || (!runtimeSkill.sourceId && skill.sourceName === source.name);
+}
+
+function isIndexableMarketplaceSource(source: MarketplaceSourceView): boolean {
+  return (
+    source.id === "composio-awesome-codex-skills" ||
+    source.id === "voltagent-awesome-agent-skills" ||
+    source.id === "awesome-claude-skills"
+  );
+}
+
+function inferMarketplaceSourceStatus({
+  canIndex,
+  indexedCount,
+  source
+}: {
+  canIndex: boolean;
+  indexedCount: number;
+  source: MarketplaceSourceView;
+}): MarketplaceSourceView["status"] {
+  if (!canIndex) {
+    return "external";
+  }
+
+  if (source.error) {
+    return "error";
+  }
+
+  return indexedCount > 0 ? "ready" : "not-indexed";
 }
 
 function getMarketplaceSourceStatusLabel(source: MarketplaceSourceView): string {

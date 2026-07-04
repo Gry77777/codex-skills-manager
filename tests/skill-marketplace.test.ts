@@ -88,6 +88,40 @@ describe("SkillMarketplace", () => {
     expect(claude.items.map((item) => item.id)).toEqual(["two"]);
   });
 
+  it("normalizes upgraded cache entries that are missing item source ids", async () => {
+    const legacyItem = cachedSkill("legacy-one", "legacy-browser", "composio-awesome-codex-skills", "Composio Awesome Codex Skills");
+    const { sourceId: _sourceId, ...itemWithoutSourceId } = legacyItem;
+    await fs.writeFile(
+      cachePath,
+      `${JSON.stringify(
+        {
+          version: 2,
+          fetchedAt: Date.now(),
+          sourceIndexes: {
+            "composio-awesome-codex-skills": {
+              fetchedAt: Date.now(),
+              items: [itemWithoutSourceId]
+            }
+          }
+        },
+        null,
+        2
+      )}\n`,
+      "utf8"
+    );
+
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock as typeof fetch;
+
+    const marketplace = new SkillMarketplace(cachePath);
+    const result = await marketplace.search({ sourceId: "composio-awesome-codex-skills" });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].sourceId).toBe("composio-awesome-codex-skills");
+    expect(result.sources.find((source) => source.id === "composio-awesome-codex-skills")?.status).toBe("ready");
+  });
+
   it("records source-level errors without breaking the marketplace result", async () => {
     global.fetch = vi.fn(async () =>
       new Response("rate limited", {

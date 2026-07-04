@@ -260,10 +260,10 @@ export class SkillMarketplace {
     try {
       const raw = JSON.parse(await fs.readFile(this.cachePath, "utf8")) as MarketplaceCacheFileV1 | MarketplaceCacheFileV2;
       if (raw.version === 2 && raw.sourceIndexes && Number.isFinite(raw.fetchedAt)) {
-        return {
+        return normalizeCachedIndex({
           fetchedAt: raw.fetchedAt,
           sourceIndexes: raw.sourceIndexes
-        };
+        });
       }
 
       if (raw.version === 1 && Array.isArray(raw.items) && Number.isFinite(raw.fetchedAt)) {
@@ -288,6 +288,28 @@ export class SkillMarketplace {
       // The marketplace can still work without a persisted cache.
     }
   }
+}
+
+function normalizeCachedIndex(cache: CachedIndex): CachedIndex {
+  const sourceIndexes: Record<string, CachedSourceIndex> = {};
+  for (const [sourceId, sourceIndex] of Object.entries(cache.sourceIndexes)) {
+    const source = marketplaceSources.find((candidate) => candidate.id === sourceId);
+    const normalizedSourceId = source?.id ?? sourceIndex.sourceId ?? sourceId;
+    sourceIndexes[normalizedSourceId] = {
+      ...sourceIndex,
+      sourceId: normalizedSourceId,
+      items: sourceIndex.items.map((item) => ({
+        ...item,
+        sourceId: item.sourceId ?? normalizedSourceId,
+        sourceName: item.sourceName || source?.name || sourceIndex.sourceId || normalizedSourceId
+      }))
+    };
+  }
+
+  return {
+    fetchedAt: cache.fetchedAt,
+    sourceIndexes
+  };
 }
 
 function migrateV1Cache(cache: MarketplaceCacheFileV1): CachedIndex {
