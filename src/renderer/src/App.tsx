@@ -700,6 +700,7 @@ function getSkillsApi(): Window["skills"] {
     "cancelGitHubDiscovery",
     "importGitHubUrls",
     "searchMarketplace",
+    "refreshMarketplaceSource",
     "importLocalSkills",
     "repairBrokenSkills",
     "selectFolder",
@@ -739,6 +740,32 @@ function getAiApi(): Window["ai"] {
   }
 
   return window.ai;
+}
+
+function formatUserError(error: unknown, fallback: string): string {
+  const rawMessage = error instanceof Error ? error.message : typeof error === "string" ? error : fallback;
+  const message = rawMessage
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+
+  if (/Unexpected end of JSON input/i.test(message)) {
+    return "本地状态文件为空或已损坏，应用已尝试自动重建；如果仍然失败，请运行“一键修复”后重试。";
+  }
+
+  if (/rate limit exceeded/i.test(message)) {
+    return "GitHub 请求次数已达到限制。已经成功导入的技能会保留，请稍后再重试剩余条目。";
+  }
+
+  if (/Failed to fetch|NetworkError|fetch failed/i.test(message)) {
+    return "网络请求失败，请检查网络连接后重试。";
+  }
+
+  if (/ENOENT/i.test(message)) {
+    return "找不到需要的本地文件或目录，可能已被移动或删除。";
+  }
+
+  return message || fallback;
 }
 
 export function App(): JSX.Element {
@@ -866,7 +893,7 @@ export function App(): JSX.Element {
         }
       });
     } catch (progressError) {
-      setError(progressError instanceof Error ? progressError.message : "订阅 AI 识别进度失败。");
+      setError(formatUserError(progressError, "订阅 AI 识别进度失败。"));
     }
 
     return () => {
@@ -974,7 +1001,7 @@ export function App(): JSX.Element {
     try {
       setSkills(await getSkillsApi().scan());
     } catch (scanError) {
-      setError(scanError instanceof Error ? scanError.message : "扫描技能失败。");
+      setError(formatUserError(scanError, "扫描技能失败。"));
     } finally {
       setIsLoading(false);
     }
@@ -992,7 +1019,7 @@ export function App(): JSX.Element {
         apiKey: ""
       });
     } catch (settingsError) {
-      setError(settingsError instanceof Error ? settingsError.message : "读取 AI 设置失败。");
+      setError(formatUserError(settingsError, "读取 AI 设置失败。"));
     }
   }
 
@@ -1001,7 +1028,7 @@ export function App(): JSX.Element {
       const cache = await getAiApi().getAnalysisCache();
       setAiAnalysisRecords(cache.records);
     } catch (cacheError) {
-      setError(cacheError instanceof Error ? cacheError.message : "读取 AI 识别缓存失败。");
+      setError(formatUserError(cacheError, "读取 AI 识别缓存失败。"));
     }
   }
 
@@ -1055,7 +1082,7 @@ export function App(): JSX.Element {
       setIsAiSettingsOpen(false);
       setNotice(saved.enabled ? `${getAiProviderPreset(saved.provider).label} AI 设置已保存。` : "AI 识别已关闭。");
     } catch (settingsError) {
-      setError(settingsError instanceof Error ? settingsError.message : "保存 AI 设置失败。");
+      setError(formatUserError(settingsError, "保存 AI 设置失败。"));
     } finally {
       setIsSavingAiSettings(false);
     }
@@ -1072,7 +1099,7 @@ export function App(): JSX.Element {
     } catch (testError) {
       setAiTestResult({
         ok: false,
-        message: testError instanceof Error ? testError.message : "AI API 测试失败。"
+        message: formatUserError(testError, "AI API 测试失败。")
       });
     } finally {
       setIsTestingAiConnection(false);
@@ -1154,7 +1181,7 @@ export function App(): JSX.Element {
       if (aiAnalysisRequestIdRef.current !== requestId) {
         return;
       }
-      setError(analysisError instanceof Error ? analysisError.message : "AI 批量识别失败。");
+      setError(formatUserError(analysisError, "AI 批量识别失败。"));
     } finally {
       if (aiAnalysisRequestIdRef.current === requestId) {
         aiAnalysisRequestIdRef.current = null;
@@ -1282,7 +1309,7 @@ export function App(): JSX.Element {
         setError(formatAiBatchFailures(failures));
       }
     } catch (analysisError) {
-      setError(analysisError instanceof Error ? `导入成功，但后台 AI 识别失败：${analysisError.message}` : "导入成功，但后台 AI 识别失败。");
+      setError(`导入成功，但后台 AI 识别失败：${formatUserError(analysisError, "后台 AI 识别失败。")}`);
     } finally {
       importAiAnalysisRequestIdRef.current = null;
       isImportAiQueueRunningRef.current = false;
@@ -1351,7 +1378,7 @@ export function App(): JSX.Element {
       recordSkillUsage(skill.id, "toggles");
     } catch (statusError) {
       setSkills(previous);
-      setError(statusError instanceof Error ? statusError.message : "更新技能状态失败。");
+      setError(formatUserError(statusError, "更新技能状态失败。"));
     }
   }
 
@@ -1377,7 +1404,7 @@ export function App(): JSX.Element {
           : "已导入，默认关闭。AI 接入未启用时不会自动识别。"
       );
     } catch (importError) {
-      setError(importError instanceof Error ? importError.message : "导入技能失败。");
+      setError(formatUserError(importError, "导入技能失败。"));
     } finally {
       setIsImporting(false);
     }
@@ -1409,7 +1436,7 @@ export function App(): JSX.Element {
       const result = await getSkillsApi().searchMarketplace({ query, sourceId, limit: 96 });
       setMarketplaceResult(result);
     } catch (marketplaceError) {
-      setError(marketplaceError instanceof Error ? marketplaceError.message : "搜索技能广场失败。");
+      setError(formatUserError(marketplaceError, "搜索技能广场失败。"));
     } finally {
       setIsSearchingMarketplace(false);
     }
@@ -1459,7 +1486,7 @@ export function App(): JSX.Element {
 
       setNotice(`已刷新「${source.name}」，找到 ${refreshedSource?.indexedCount ?? 0} 个可浏览候选。安装具体技能时才会读取并校验 SKILL.md。`);
     } catch (marketplaceError) {
-      setError(marketplaceError instanceof Error ? marketplaceError.message : "刷新技能来源失败。");
+      setError(formatUserError(marketplaceError, "刷新技能来源失败。"));
     } finally {
       setMarketplaceInstallingId(null);
     }
@@ -1501,7 +1528,7 @@ export function App(): JSX.Element {
       if (githubDiscoveryRequestIdRef.current !== requestId) {
         return;
       }
-      setError(marketplaceError instanceof Error ? marketplaceError.message : "安装技能广场条目失败。");
+      setError(formatUserError(marketplaceError, "安装技能广场条目失败。"));
     } finally {
       if (githubDiscoveryRequestIdRef.current === requestId) {
         githubDiscoveryRequestIdRef.current = null;
@@ -1607,7 +1634,7 @@ export function App(): JSX.Element {
       if (githubDiscoveryRequestIdRef.current !== requestId) {
         return;
       }
-      setError(githubError instanceof Error ? githubError.message : "识别 GitHub 技能失败。");
+      setError(formatUserError(githubError, "识别 GitHub 技能失败。"));
     } finally {
       if (githubDiscoveryRequestIdRef.current === requestId) {
         githubDiscoveryRequestIdRef.current = null;
@@ -1661,7 +1688,7 @@ export function App(): JSX.Element {
             : `已从 GitHub 导入 ${imported.length} 个技能。远程导入默认关闭，打开后即可使用。`)
       );
     } catch (githubError) {
-      setError(githubError instanceof Error ? githubError.message : "从 GitHub 导入技能失败。");
+      setError(formatUserError(githubError, "从 GitHub 导入技能失败。"));
     } finally {
       setIsImportingGitHub(false);
     }
@@ -1705,7 +1732,7 @@ export function App(): JSX.Element {
           : `整理完成：新增 ${summary.imported} 个，同步 ${summary.synced} 个，跳过 ${summary.skipped} 个，失败 ${summary.failed} 个。已导入的技能会保留原始开关状态，不会关闭原技能。`
       );
     } catch (manageError) {
-      setError(manageError instanceof Error ? manageError.message : "整理本机技能失败。");
+      setError(formatUserError(manageError, "整理本机技能失败。"));
     } finally {
       setIsManagingLocal(false);
     }
@@ -1737,7 +1764,7 @@ export function App(): JSX.Element {
         `修复完成：检查 ${summary.checked} 个，修复 ${summary.repaired} 项，跳过 ${summary.skipped} 项，失败 ${summary.failed} 项。`
       );
     } catch (repairError) {
-      setError(repairError instanceof Error ? repairError.message : "一键修复失败。");
+      setError(formatUserError(repairError, "一键修复失败。"));
     } finally {
       setIsRepairing(false);
     }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.5 - 2026-07-04
+
+这是错误提示和本地状态文件容错补丁。
+
+### Fixed
+
+- 修复本地 `registry.json` 为空或损坏时，开关 skill 会显示英文 `Unexpected end of JSON input` 的问题。
+- 损坏的 registry 会自动备份为 `.corrupt-时间戳`，应用会用当前扫描结果重建状态文件。
+- 前端会清理 Electron IPC 的英文包装错误，后续顶部错误提示默认显示中文。
+- GitHub 限流、网络失败、文件缺失等常见错误会转换成更容易理解的中文提示。
+
+### Tests
+
+- 新增空 registry 自动备份并重建的回归测试。
+
 ## 0.1.4 - 2026-07-04
 
 这是 GitHub 批量导入体验补丁。

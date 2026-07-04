@@ -41,6 +41,19 @@ describe("SkillRegistry", () => {
 
     expect(imported.status).toBe("enabled");
   });
+
+  it("backs up a corrupt registry and rebuilds it from the current scan", async () => {
+    const targetPath = await registryPath();
+    await fs.writeFile(targetPath, "", "utf8");
+    const registry = new SkillRegistry(targetPath);
+
+    const [skill] = await registry.list([record({ id: "rebuilt" })]);
+    const backups = await fs.readdir(path.dirname(targetPath));
+
+    expect(skill.id).toBe("rebuilt");
+    expect(backups.some((file) => file.startsWith("registry.json.corrupt-"))).toBe(true);
+    await expect(fs.readFile(targetPath, "utf8")).resolves.toContain('"rebuilt"');
+  });
 });
 
 async function registryPath(): Promise<string> {

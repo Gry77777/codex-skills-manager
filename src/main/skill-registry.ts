@@ -46,7 +46,12 @@ export class SkillRegistry {
         return emptyRegistry();
       }
 
-      throw error;
+      if (error instanceof SyntaxError) {
+        await this.backupCorruptRegistry();
+        return emptyRegistry();
+      }
+
+      throw new Error(`读取技能状态记录失败：${error instanceof Error ? error.message : "未知错误"}`);
     }
   }
 
@@ -58,6 +63,15 @@ export class SkillRegistry {
 
     await fs.mkdir(path.dirname(this.registryPath), { recursive: true });
     await fs.writeFile(this.registryPath, `${JSON.stringify(registry, null, 2)}\n`, "utf8");
+  }
+
+  private async backupCorruptRegistry(): Promise<void> {
+    try {
+      const backupPath = `${this.registryPath}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+      await fs.rename(this.registryPath, backupPath);
+    } catch {
+      // If backup fails, continue with an empty registry so the app remains usable.
+    }
   }
 }
 
