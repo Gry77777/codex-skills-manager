@@ -1650,10 +1650,15 @@ export function App(): JSX.Element {
       setIsGitHubDialogOpen(false);
       const importedIds = new Set(imported.map((skill) => skill.id));
       enqueueImportedAiAnalysis(scanned.filter((skill) => importedIds.has(skill.id)));
+      const partialNotice =
+        imported.length < sourceUrls.length
+          ? `已成功导入 ${imported.length}/${sourceUrls.length} 个技能；剩余条目可能因为 GitHub 限流或目录异常未完成。`
+          : null;
       setNotice(
-        aiSettings?.enabled && aiSettings.hasApiKey
-          ? `已从 GitHub 导入 ${imported.length} 个技能。远程导入默认关闭；后台 AI 正在识别并缓存内容。`
-          : `已从 GitHub 导入 ${imported.length} 个技能。远程导入默认关闭，打开后即可使用。`
+        partialNotice ??
+          (aiSettings?.enabled && aiSettings.hasApiKey
+            ? `已从 GitHub 导入 ${imported.length} 个技能。远程导入默认关闭；后台 AI 正在识别并缓存内容。`
+            : `已从 GitHub 导入 ${imported.length} 个技能。远程导入默认关闭，打开后即可使用。`)
       );
     } catch (githubError) {
       setError(githubError instanceof Error ? githubError.message : "从 GitHub 导入技能失败。");

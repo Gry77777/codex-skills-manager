@@ -96,12 +96,22 @@ export class SkillsController {
     }
 
     const imported: SkillRecord[] = [];
+    const failures: string[] = [];
     for (const githubUrl of githubUrls) {
       if (typeof githubUrl !== "string" || githubUrl.trim() === "") {
-        throw new Error("GitHub 技能链接无效。");
+        failures.push("GitHub 技能链接无效。");
+        continue;
       }
 
-      imported.push(await this.importer.importGitHubUrl(githubUrl));
+      try {
+        imported.push(await this.importer.importGitHubUrl(githubUrl));
+      } catch (error) {
+        failures.push(error instanceof Error ? error.message : "导入 GitHub 技能失败。");
+      }
+    }
+
+    if (imported.length === 0) {
+      throw new Error(failures[0] ?? "从 GitHub 导入技能失败。");
     }
 
     await this.scan();
