@@ -46,6 +46,35 @@ describe("SkillsController", () => {
     await expect(controller.importGitHubUrls(["https://github.com/acme/repo"])).rejects.toThrow("403 rate limit exceeded");
     expect(controller.scan).not.toHaveBeenCalled();
   });
+
+  it("imports GitHub batches with bounded concurrency", async () => {
+    const controller = new SkillsController();
+    let activeImports = 0;
+    let maxActiveImports = 0;
+    const importedSkills = Array.from({ length: 6 }, (_, index) => record(`imported-${index}`));
+
+    vi.spyOn(controller, "scan").mockResolvedValue(importedSkills);
+    Object.defineProperty(controller, "importer", {
+      value: {
+        importGitHubUrl: vi.fn(async (url: string) => {
+          activeImports += 1;
+          maxActiveImports = Math.max(maxActiveImports, activeImports);
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          activeImports -= 1;
+          return record(url.split("/").at(-1) ?? "imported");
+        })
+      }
+    });
+
+    const imported = await controller.importGitHubUrls(
+      Array.from({ length: 6 }, (_, index) => `https://github.com/acme/repo/tree/main/skills/${index}`)
+    );
+
+    expect(imported).toHaveLength(6);
+    expect(maxActiveImports).toBeGreaterThan(1);
+    expect(maxActiveImports).toBeLessThanOrEqual(3);
+    expect(controller.scan).toHaveBeenCalledOnce();
+  });
 });
 
 function record(id: string): SkillRecord {

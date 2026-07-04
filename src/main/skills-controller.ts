@@ -19,6 +19,8 @@ import { SkillRepairer } from "./skill-repairer.js";
 import { SkillRegistry } from "./skill-registry.js";
 import { SkillScanner } from "./skill-scanner.js";
 
+const GITHUB_IMPORT_CONCURRENCY = 3;
+
 export class SkillsController {
   private readonly scanner = new SkillScanner(getSkillRoots());
   private readonly registry = new SkillRegistry();
@@ -95,20 +97,17 @@ export class SkillsController {
       throw new Error("一次最多导入 50 个 GitHub 技能。");
     }
 
-    const imported: SkillRecord[] = [];
-    const failures: string[] = [];
-    for (const githubUrl of githubUrls) {
+    const results = await mapWithConcurrency(githubUrls, GITHUB_IMPORT_CONCURRENCY, async (githubUrl) => {
       if (typeof githubUrl !== "string" || githubUrl.trim() === "") {
-        failures.push("GitHub 技能链接无效。");
-        continue;
+        throw new Error("GitHub 技能链接无效。");
       }
 
-      try {
-        imported.push(await this.importer.importGitHubUrl(githubUrl));
-      } catch (error) {
-        failures.push(error instanceof Error ? error.message : "导入 GitHub 技能失败。");
-      }
-    }
+      return this.importer.importGitHubUrl(githubUrl);
+    });
+    const imported = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+    const failures = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason instanceof Error ? result.reason.message : "导入 GitHub 技能失败。"] : []
+    );
 
     if (imported.length === 0) {
       throw new Error(failures[0] ?? "从 GitHub 导入技能失败。");
@@ -193,4 +192,35 @@ function assertStatus(status: string): asserts status is SettableSkillStatus {
   if (status !== "enabled" && status !== "disabled") {
     throw new Error("不支持的技能状态。");
   }
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>
+): Promise<Array<PromiseSettledResult<R>>> {
+  const results = new Array<PromiseSettledResult<R>>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      try {
+        results[currentIndex] = {
+          status: "fulfilled",
+          value: await mapper(items[currentIndex], currentIndex)
+        };
+      } catch (error) {
+        results[currentIndex] = {
+          status: "rejected",
+          reason: error
+        };
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
 }

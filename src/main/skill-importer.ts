@@ -26,6 +26,7 @@ const MAX_GITHUB_FILES = 200;
 const MAX_GITHUB_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_GITHUB_TOTAL_BYTES = 25 * 1024 * 1024;
 const MAX_GITHUB_DISCOVERY_CANDIDATES = 80;
+const GITHUB_DOWNLOAD_CONCURRENCY = 4;
 
 type GitHubSkillSpec = {
   owner: string;
@@ -609,7 +610,7 @@ async function downloadGitHubContent(
 
   if (Array.isArray(item)) {
     await fs.mkdir(targetPath, { recursive: true });
-    for (const child of item) {
+    await mapWithConcurrency(item, GITHUB_DOWNLOAD_CONCURRENCY, async (child) => {
       const childTarget = path.join(targetPath, child.name);
       if (!isSameOrInside(childTarget, state.rootPath)) {
         throw new Error("GitHub skill 包含不安全的文件路径。");
@@ -617,16 +618,16 @@ async function downloadGitHubContent(
 
       if (child.type === "dir") {
         await downloadGitHubContent(spec, child.path, childTarget, state);
-        continue;
+        return;
       }
 
       if (child.type === "file") {
         await downloadGitHubFile(child, childTarget, state);
-        continue;
+        return;
       }
 
       throw new Error("GitHub skill 中不支持符号链接、子模块或特殊文件。");
-    }
+    });
     return;
   }
 
@@ -959,4 +960,23 @@ async function copyDirectorySafely(source: string, target: string): Promise<void
   }
 
   await copy(sourceRoot, targetRoot);
+}
+
+async function mapWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(concurrency, items.length));
+
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      await mapper(items[currentIndex], currentIndex);
+    }
+  }
+
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
 }

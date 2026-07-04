@@ -565,6 +565,15 @@ function compareByName(left: SkillRecord, right: SkillRecord): number {
   return left.name.localeCompare(right.name) || left.source.localeCompare(right.source) || left.path.localeCompare(right.path);
 }
 
+function mergeSkillRecords(current: SkillRecord[], incoming: SkillRecord[]): SkillRecord[] {
+  const byId = new Map(current.map((skill) => [skill.id, skill]));
+  for (const skill of incoming) {
+    byId.set(skill.id, skill);
+  }
+
+  return [...byId.values()].sort(compareByName);
+}
+
 function compareSkills(
   left: SkillRecord,
   right: SkillRecord,
@@ -1394,10 +1403,9 @@ export function App(): JSX.Element {
       }
 
       const imported = await getSkillsApi().importFolder(folderPath);
-      const scanned = await getSkillsApi().scan();
-      setSkills(scanned);
+      setSkills((current) => mergeSkillRecords(current, [imported]));
       setStatusFilter("disabled");
-      enqueueImportedAiAnalysis(scanned.filter((skill) => skill.id === imported.id));
+      enqueueImportedAiAnalysis([imported]);
       setNotice(
         aiSettings?.enabled && aiSettings.hasApiKey
           ? "已导入，默认关闭；后台 AI 正在识别并缓存内容。"
@@ -1667,16 +1675,14 @@ export function App(): JSX.Element {
 
     try {
       const imported = await getSkillsApi().importGitHubUrls(sourceUrls);
-      const scanned = await getSkillsApi().scan();
-      setSkills(scanned);
+      setSkills((current) => mergeSkillRecords(current, imported));
       setSourceFilter("imported");
       setStatusFilter("disabled");
       setGithubUrlInput("");
       setGithubDiscovery(null);
       setSelectedGitHubCandidateIds([]);
       setIsGitHubDialogOpen(false);
-      const importedIds = new Set(imported.map((skill) => skill.id));
-      enqueueImportedAiAnalysis(scanned.filter((skill) => importedIds.has(skill.id)));
+      enqueueImportedAiAnalysis(imported);
       const partialNotice =
         imported.length < sourceUrls.length
           ? `已成功导入 ${imported.length}/${sourceUrls.length} 个技能；剩余条目可能因为 GitHub 限流或目录异常未完成。`
