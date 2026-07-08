@@ -61,7 +61,12 @@ import type {
   SkillSource,
   SkillStatus
 } from "../../shared/types";
-import { buildSkillListViewModel, type SourceFilter, type StatusFilter } from "./skill-view-model";
+import {
+  buildSkillListViewModel,
+  canUseSkillStatusToggle,
+  type SourceFilter,
+  type StatusFilter
+} from "./skill-view-model";
 
 type SortMode = "smart" | "heat" | "usage" | "name" | "source" | "status" | "issues" | "updated";
 type SkillUsageAction = "views" | "toggles" | "analyses";
@@ -2413,7 +2418,7 @@ function SkillGridSkeleton(): JSX.Element {
 }
 
 function canBulkToggleSkill(skill: SkillRecord): boolean {
-  return skill.valid && (skill.status === "enabled" || skill.status === "disabled");
+  return canUseSkillStatusToggle(skill) && (skill.status === "enabled" || skill.status === "disabled");
 }
 
 function SkillAvatar({ skill, detail = false }: { skill: SkillRecord; detail?: boolean }): JSX.Element {
@@ -2618,11 +2623,11 @@ function SkillUsageSwitch({
   skill: SkillRecord;
   onStatusChange: (skill: SkillRecord, status: SettableSkillStatus) => Promise<void>;
 }): JSX.Element {
-  const canToggle = skill.valid && skill.status !== "quarantined" && skill.status !== "invalid";
+  const canToggle = canUseSkillStatusToggle(skill);
   const isEnabled = skill.status === "enabled";
 
   if (!canToggle) {
-    return <span className="blocked-switch">{statusLabels[skill.status]}</span>;
+    return <span className="blocked-switch" title={skill.managementNote}>{skill.canSetStatus ? statusLabels[skill.status] : "只读"}</span>;
   }
 
   return (
@@ -3876,6 +3881,12 @@ function SkillDetails({
           <span>来源</span>
           <p>{getSourceLabel(skill)}</p>
         </div>
+        {skill.managementNote ? (
+          <div className="info-card info-card-wide">
+            <span>管理说明</span>
+            <p>{skill.managementNote}</p>
+          </div>
+        ) : null}
         <div className="info-card info-card-wide">
           <span>路径</span>
           <code>{skill.path}</code>

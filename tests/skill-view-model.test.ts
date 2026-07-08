@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSkillListViewModel } from "../src/renderer/src/skill-view-model.js";
+import { buildSkillListViewModel, canUseSkillStatusToggle } from "../src/renderer/src/skill-view-model.js";
 import type { SkillRecord, SkillSource, SkillStatus } from "../src/shared/types.js";
 
 describe("buildSkillListViewModel", () => {
@@ -41,6 +41,12 @@ describe("buildSkillListViewModel", () => {
     expect(view.statusFilterCounts).toMatchObject({ all: 2, effective: 1, enabled: 1, disabled: 1 });
     expect(view.currentCounts).toMatchObject({ total: 1, enabled: 1 });
     expect(view.visibleSkills.map((skill) => skill.id)).toEqual(["enabled-doc"]);
+  });
+
+  it("marks plugin cache skills as non-toggleable in the UI view model", () => {
+    expect(canUseSkillStatusToggle(record({ source: "plugin-cache", canSetStatus: false }))).toBe(false);
+    expect(canUseSkillStatusToggle(record({ source: "superpowers-local", canSetStatus: true }))).toBe(true);
+    expect(canUseSkillStatusToggle(record({ status: "invalid", valid: false }))).toBe(false);
   });
 });
 

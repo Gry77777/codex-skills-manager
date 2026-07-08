@@ -45,6 +45,10 @@ export function buildSkillListViewModel(input: SkillListViewModelInput): SkillLi
   };
 }
 
+export function canUseSkillStatusToggle(skill: SkillRecord): boolean {
+  return skill.canSetStatus && skill.valid && skill.status !== "quarantined" && skill.status !== "invalid";
+}
+
 function matchesSearch(skill: SkillRecord, query: string): boolean {
   return (
     query.length === 0 ||
