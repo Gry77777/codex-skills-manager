@@ -49,6 +49,10 @@ export class SkillsController {
       throw new Error("无效的技能不能打开或关闭。");
     }
 
+    if (!target.canSetStatus) {
+      throw new Error(target.managementNote ?? "这个技能来源不允许在这里开关。");
+    }
+
     await setPhysicalSkillStatus(target, status);
     const updatedRecords = await this.scan();
     const updated = updatedRecords.find((record) => record.id === id);

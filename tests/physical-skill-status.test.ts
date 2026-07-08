@@ -58,6 +58,7 @@ function record(skillPath: string): SkillRecord {
     source: "codex-local",
     status: "enabled",
     readonly: true,
+    canSetStatus: true,
     valid: true,
     issues: [],
     hash: "",

@@ -26,6 +26,10 @@ export class SkillRegistry {
       throw new Error("无效的技能不能打开或关闭。");
     }
 
+    if (!target.canSetStatus) {
+      throw new Error(target.managementNote ?? "这个技能来源不允许在这里开关。");
+    }
+
     const updated = records.map((record) => (record.id === id ? { ...record, status } : record));
     await this.writeFromRecords(updated);
     return updated.find((record) => record.id === id)!;
@@ -109,7 +113,14 @@ function mergeRecords(scanned: SkillRecord[], persisted: Record<string, Registry
       path: saved.path,
       source: saved.source,
       status: "invalid",
-      readonly: saved.source !== "imported",
+      readonly: saved.source !== "imported" && saved.source !== "superpowers-local",
+      canSetStatus: saved.source !== "plugin-cache",
+      managementNote:
+        saved.source === "plugin-cache"
+          ? "插件缓存由 Codex 插件管理，当前仅展示，不允许在这里开关。"
+          : saved.source === "superpowers-local"
+            ? "Superpowers 技能属于高级工作流能力，开关后建议重新打开 Codex 会话。"
+            : undefined,
       valid: false,
       issues: [{ code: "path-missing", message: "这个技能路径已经不存在。" }],
       hash: saved.hash ?? "",

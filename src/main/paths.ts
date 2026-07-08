@@ -4,6 +4,8 @@ import path from "node:path";
 export type SkillRoots = {
   codexLocal: string;
   agentLocal: string;
+  superpowersLocal: string;
+  pluginCache: string;
   imported: string;
 };
 
@@ -41,6 +43,8 @@ export function getSkillRoots(): SkillRoots {
   return {
     codexLocal: path.join(home, ".codex", "skills"),
     agentLocal: path.join(home, ".agents", "skills"),
+    superpowersLocal: path.join(home, ".codex", "superpowers", "skills"),
+    pluginCache: path.join(home, ".codex", "plugins", "cache"),
     imported: getImportedSkillsRoot()
   };
 }

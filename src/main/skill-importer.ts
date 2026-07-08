@@ -16,7 +16,7 @@ import { parseFrontmatter } from "./skill-frontmatter.js";
 import { buildSkillSummaryZh } from "./skill-summary.js";
 
 type LocalImportRoot = {
-  source: Exclude<SkillSource, "imported">;
+  source: Extract<SkillSource, "codex-local" | "agent-local">;
   path: string;
 };
 
@@ -113,6 +113,7 @@ export class SkillImporter {
       source: "imported",
       status: "disabled",
       readonly: false,
+      canSetStatus: true,
       valid: true,
       issues: [],
       hash: shortHash(targetPath),
@@ -179,6 +180,7 @@ export class SkillImporter {
       source: "imported",
       status: "disabled",
       readonly: false,
+      canSetStatus: true,
       valid: true,
       issues: [],
       hash: shortHash(spec.sourceUrl),
@@ -284,7 +286,7 @@ export class SkillImporter {
   }
 
   private async getAvailableManagedTargetPath(
-    source: Exclude<SkillSource, "imported">,
+    source: Extract<SkillSource, "codex-local" | "agent-local">,
     skillName: string,
     sourcePath: string
   ): Promise<string> {
@@ -339,7 +341,7 @@ export class SkillImporter {
 
   private async writeManagedManifest(
     targetPath: string,
-    manifest: { source: Exclude<SkillSource, "imported">; sourcePath: string; originalName: string }
+    manifest: { source: Extract<SkillSource, "codex-local" | "agent-local">; sourcePath: string; originalName: string }
   ): Promise<void> {
     await fs.writeFile(
       path.join(targetPath, MANIFEST_FILE),

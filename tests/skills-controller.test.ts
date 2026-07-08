@@ -75,6 +75,21 @@ describe("SkillsController", () => {
     expect(maxActiveImports).toBeLessThanOrEqual(3);
     expect(controller.scan).toHaveBeenCalledOnce();
   });
+
+  it("rejects status changes for read-only plugin cache skills in the main process", async () => {
+    const controller = new SkillsController();
+    vi.spyOn(controller, "scan").mockResolvedValue([
+      {
+        ...record("plugin-skill"),
+        source: "plugin-cache",
+        readonly: true,
+        canSetStatus: false,
+        managementNote: "插件缓存由 Codex 插件管理，当前仅展示，不允许在这里开关。"
+      }
+    ]);
+
+    await expect(controller.setStatus("plugin-skill", "disabled")).rejects.toThrow("不允许在这里开关");
+  });
 });
 
 function record(id: string): SkillRecord {
@@ -87,6 +102,7 @@ function record(id: string): SkillRecord {
     source: "imported",
     status: "disabled",
     readonly: false,
+    canSetStatus: true,
     valid: true,
     issues: [],
     hash: id,

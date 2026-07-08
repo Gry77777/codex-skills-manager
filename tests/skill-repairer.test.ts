@@ -170,6 +170,7 @@ function record(overrides: Partial<SkillRecord>): SkillRecord {
     source: "codex-local",
     status: "enabled",
     readonly: true,
+    canSetStatus: true,
     valid: true,
     issues: [],
     hash: "hash",

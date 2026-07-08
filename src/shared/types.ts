@@ -1,4 +1,4 @@
-export type SkillSource = "codex-local" | "agent-local" | "imported";
+export type SkillSource = "codex-local" | "agent-local" | "superpowers-local" | "plugin-cache" | "imported";
 
 export type SkillStatus = "enabled" | "disabled" | "quarantined" | "invalid";
 
@@ -24,6 +24,8 @@ export type SkillRecord = {
   source: SkillSource;
   status: SkillStatus;
   readonly: boolean;
+  canSetStatus: boolean;
+  managementNote?: string;
   valid: boolean;
   issues: SkillIssue[];
   hash: string;

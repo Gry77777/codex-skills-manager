@@ -20,6 +20,8 @@ export class SkillScanner {
     const roots: ScanRoot[] = [
       { source: "codex-local", path: this.roots.codexLocal },
       { source: "agent-local", path: this.roots.agentLocal },
+      { source: "superpowers-local", path: this.roots.superpowersLocal },
+      { source: "plugin-cache", path: this.roots.pluginCache },
       { source: "imported", path: this.roots.imported }
     ];
 
@@ -67,7 +69,9 @@ export class SkillScanner {
       path: skillPath,
       source,
       status: health.status,
-      readonly: source !== "imported",
+      readonly: isReadOnlySource(source),
+      canSetStatus: canSetSourceStatus(source),
+      managementNote: getSourceManagementNote(source),
       valid: health.valid,
       issues: health.issues,
       hash,
@@ -90,12 +94,14 @@ async function exists(targetPath: string): Promise<boolean> {
 }
 
 async function collectSkillDirectories(candidatePath: string, depth = 0): Promise<string[]> {
+  const results: string[] = [];
+
   if (await hasSkillMarkdown(candidatePath)) {
-    return [candidatePath];
+    results.push(candidatePath);
   }
 
   if (depth >= 4) {
-    return [];
+    return results;
   }
 
   let entries;
@@ -105,12 +111,32 @@ async function collectSkillDirectories(candidatePath: string, depth = 0): Promis
     return [];
   }
 
-  const directories = entries.filter((entry) => entry.isDirectory());
+  const directories = entries.filter((entry) => entry.isDirectory() && entry.name !== ".git" && entry.name !== "node_modules");
   const nested = await Promise.all(
     directories.map((entry) => collectSkillDirectories(path.join(candidatePath, entry.name), depth + 1))
   );
 
-  return nested.flat();
+  return [...new Set([...results, ...nested.flat()])];
+}
+
+function isReadOnlySource(source: SkillSource): boolean {
+  return source !== "imported" && source !== "superpowers-local";
+}
+
+function canSetSourceStatus(source: SkillSource): boolean {
+  return source !== "plugin-cache";
+}
+
+function getSourceManagementNote(source: SkillSource): string | undefined {
+  if (source === "superpowers-local") {
+    return "Superpowers 技能属于高级工作流能力，开关后建议重新打开 Codex 会话。";
+  }
+
+  if (source === "plugin-cache") {
+    return "插件缓存由 Codex 插件管理，当前仅展示，不允许在这里开关。";
+  }
+
+  return undefined;
 }
 
 async function hasSkillMarkdown(skillPath: string): Promise<boolean> {

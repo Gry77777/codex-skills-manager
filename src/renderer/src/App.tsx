@@ -115,6 +115,8 @@ const sortLabels: Record<SortMode, string> = {
 const sourceLabels: Record<SkillSource, string> = {
   "codex-local": ".codex",
   "agent-local": ".agents",
+  "superpowers-local": "Superpowers",
+  "plugin-cache": "插件缓存",
   imported: "已导入"
 };
 
@@ -262,6 +264,14 @@ function getSourceMark(source: SkillSource): string {
 
   if (source === "agent-local") {
     return "A";
+  }
+
+  if (source === "superpowers-local") {
+    return "S";
+  }
+
+  if (source === "plugin-cache") {
+    return "P";
   }
 
   return "M";
@@ -527,6 +537,8 @@ function getHeatScore(
   const sourceScore: Record<SkillSource, number> = {
     "codex-local": 4,
     "agent-local": 6,
+    "superpowers-local": 7,
+    "plugin-cache": 5,
     imported: 8
   };
 
@@ -1877,6 +1889,8 @@ export function App(): JSX.Element {
               <option value="all">全部来源</option>
               <option value="codex-local">.codex</option>
               <option value="agent-local">.agents</option>
+              <option value="superpowers-local">Superpowers</option>
+              <option value="plugin-cache">插件缓存</option>
               <option value="imported">已导入</option>
             </select>
           </label>

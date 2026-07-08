@@ -27,6 +27,8 @@
   --neutral-soft: #eef2f5;
   --source-codex: #0f5b78;
   --source-agent: #9a650f;
+  --source-superpowers: #7c3aed;
+  --source-plugin: #475569;
   --source-managed: #2f7b5f;
   --frame-gap: 8px;
   --shadow-soft: 0 3px 10px rgba(20, 32, 51, 0.08);
@@ -1798,6 +1800,14 @@ h1 {
   --avatar-source-color: var(--source-agent);
 }
 
+.avatar-superpowers-local {
+  --avatar-source-color: var(--source-superpowers);
+}
+
+.avatar-plugin-cache {
+  --avatar-source-color: var(--source-plugin);
+}
+
 .avatar-imported {
   --avatar-source-color: var(--source-managed);
 }
@@ -1911,6 +1921,14 @@ h1 {
 
 .avatar-agent-local .avatar-source-mark {
   background: var(--source-agent);
+}
+
+.avatar-superpowers-local .avatar-source-mark {
+  background: var(--source-superpowers);
+}
+
+.avatar-plugin-cache .avatar-source-mark {
+  background: var(--source-plugin);
 }
 
 .avatar-imported .avatar-source-mark {
@@ -2192,6 +2210,18 @@ h1 {
   color: var(--source-agent);
   background: var(--warning-soft);
   border-color: var(--warning-border);
+}
+
+.source-superpowers-local {
+  color: var(--source-superpowers);
+  background: #f4f0ff;
+  border-color: #ddd1fe;
+}
+
+.source-plugin-cache {
+  color: var(--source-plugin);
+  background: #f1f5f9;
+  border-color: #cbd5e1;
 }
 
 .source-imported {
