@@ -498,7 +498,14 @@ h1 {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  margin-bottom: 10px;
+  margin-bottom: 7px;
+}
+
+.summary-context {
+  margin: 0 0 10px;
+  color: #5d6b7a;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .metric {

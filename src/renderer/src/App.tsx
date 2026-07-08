@@ -61,9 +61,8 @@ import type {
   SkillSource,
   SkillStatus
 } from "../../shared/types";
+import { buildSkillListViewModel, type SourceFilter, type StatusFilter } from "./skill-view-model";
 
-type SourceFilter = "all" | SkillSource;
-type StatusFilter = "all" | SkillStatus | "effective";
 type SortMode = "smart" | "heat" | "usage" | "name" | "source" | "status" | "issues" | "updated";
 type SkillUsageAction = "views" | "toggles" | "analyses";
 type SkillUsageStats = {
@@ -844,42 +843,20 @@ export function App(): JSX.Element {
     [selectedId, skills]
   );
 
-  const filteredSkills = useMemo(() => {
-    const query = search.trim().toLowerCase();
-
-    return skills.filter((skill) => {
-      const matchesSearch =
-        query.length === 0 ||
-        skill.name.toLowerCase().includes(query) ||
-        skill.description.toLowerCase().includes(query) ||
-        skill.summaryZh.toLowerCase().includes(query) ||
-        skill.path.toLowerCase().includes(query);
-
-      const matchesSource = sourceFilter === "all" || skill.source === sourceFilter;
-      const matchesStatus =
-        statusFilter === "all" ||
-        skill.status === statusFilter ||
-        (statusFilter === "effective" && skill.status === "enabled" && skill.valid);
-
-      return matchesSearch && matchesSource && matchesStatus;
-    });
-  }, [skills, search, sourceFilter, statusFilter]);
+  const skillListView = useMemo(
+    () => buildSkillListViewModel({ skills, search, sourceFilter, statusFilter }),
+    [skills, search, sourceFilter, statusFilter]
+  );
+  const filteredSkills = skillListView.visibleSkills;
+  const counts = skillListView.currentCounts;
+  const globalCounts = skillListView.globalCounts;
+  const statusFilterCounts = skillListView.statusFilterCounts;
 
   const sortedSkills = useMemo(() => {
     return [...filteredSkills].sort((left, right) =>
       compareSkills(left, right, sortMode, aiAnalysisRecords, usageStats)
     );
   }, [aiAnalysisRecords, filteredSkills, sortMode, usageStats]);
-
-  const counts = useMemo(() => {
-    return {
-      total: skills.length,
-      enabled: skills.filter((skill) => skill.status === "enabled" && skill.valid).length,
-      disabled: skills.filter((skill) => skill.status === "disabled").length,
-      imported: skills.filter((skill) => skill.source === "imported").length,
-      invalid: skills.filter((skill) => !skill.valid).length
-    };
-  }, [skills]);
 
   const hasActiveFilters = search.trim().length > 0 || sourceFilter !== "all" || statusFilter !== "all";
   const activeFilterCount =
@@ -1864,10 +1841,13 @@ export function App(): JSX.Element {
         </div>
 
         <section className="summary-grid" aria-label="技能概览">
-          <Metric label="总数" value={counts.total} total={counts.total} tone="neutral" />
-          <Metric label="已打开" value={counts.enabled} total={counts.total} tone="enabled" />
-          <Metric label="有问题" value={counts.invalid} total={counts.total} tone="warning" />
+          <Metric label="当前结果" value={counts.total} total={globalCounts.total} tone="neutral" />
+          <Metric label="当前已打开" value={counts.enabled} total={Math.max(1, counts.total)} tone="enabled" />
+          <Metric label="当前有问题" value={counts.invalid} total={Math.max(1, counts.total)} tone="warning" />
         </section>
+        <p className="summary-context">
+          全部库 {globalCounts.total} 个，当前筛选 {counts.total} 个；顶部卡片随搜索、来源和状态筛选变化。
+        </p>
 
         <section className="filters" aria-label="筛选">
           <label className="search-field">
@@ -1909,22 +1889,22 @@ export function App(): JSX.Element {
         </section>
 
         <section className="quick-filters" aria-label="快速筛选">
-          <QuickFilterButton label="全部" count={counts.total} active={statusFilter === "all"} onClick={() => setStatusFilter("all")} />
+          <QuickFilterButton label="全部" count={statusFilterCounts.all} active={statusFilter === "all"} onClick={() => setStatusFilter("all")} />
           <QuickFilterButton
             label="可使用"
-            count={counts.enabled}
+            count={statusFilterCounts.effective}
             active={statusFilter === "effective"}
             onClick={() => setStatusFilter("effective")}
           />
           <QuickFilterButton
             label="已关闭"
-            count={counts.disabled}
+            count={statusFilterCounts.disabled}
             active={statusFilter === "disabled"}
             onClick={() => setStatusFilter("disabled")}
           />
           <QuickFilterButton
             label="有问题"
-            count={counts.invalid}
+            count={statusFilterCounts.invalid}
             active={statusFilter === "invalid"}
             onClick={() => setStatusFilter("invalid")}
           />
