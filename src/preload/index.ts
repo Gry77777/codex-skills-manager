@@ -6,6 +6,8 @@ import type {
   MarketplaceSearchInput,
   SettableSkillStatus,
   SkillRecord,
+  SkillRootSettingsInput,
+  SkillRootSettingsView,
   SkillScanResult,
   SkillsApi
 } from "../shared/types.js";
@@ -24,6 +26,9 @@ const skills: SkillsApi = {
   searchMarketplace: (input?: MarketplaceSearchInput) => ipcRenderer.invoke("skills:searchMarketplace", input),
   refreshMarketplaceSource: (sourceId: string, input?: MarketplaceSearchInput) =>
     ipcRenderer.invoke("skills:refreshMarketplaceSource", sourceId, input),
+  getRootSettings: (): Promise<SkillRootSettingsView> => ipcRenderer.invoke("skills:getRootSettings"),
+  saveRootSettings: (settings: SkillRootSettingsInput): Promise<SkillRootSettingsView> =>
+    ipcRenderer.invoke("skills:saveRootSettings", settings),
   importLocalSkills: () => ipcRenderer.invoke("skills:importLocalSkills"),
   repairBrokenSkills: () => ipcRenderer.invoke("skills:repairBrokenSkills"),
   selectFolder: (): Promise<string | null> => ipcRenderer.invoke("skills:selectFolder"),

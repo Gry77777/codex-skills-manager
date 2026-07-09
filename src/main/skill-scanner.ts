@@ -9,8 +9,10 @@ import { buildSkillSummaryZh } from "./skill-summary.js";
 export { parseFrontmatter } from "./skill-frontmatter.js";
 
 type ScanRoot = {
+  id: string;
   source: SkillSource;
   path: string;
+  label?: string;
 };
 
 type RootScanResult = {
@@ -44,6 +46,7 @@ const sourcePriority: Record<SkillSource, number> = {
   "codex-local": 4,
   "agent-local": 3,
   "superpowers-local": 2,
+  "custom-local": 2,
   "plugin-cache": 1
 };
 
@@ -66,11 +69,14 @@ export class SkillScanner {
   async scanWithDiagnostics(): Promise<SkillScanResult> {
     const now = new Date().toISOString();
     const roots: ScanRoot[] = [
-      { source: "codex-local", path: this.roots.codexLocal },
-      { source: "agent-local", path: this.roots.agentLocal },
-      { source: "superpowers-local", path: this.roots.superpowersLocal },
-      { source: "plugin-cache", path: this.roots.pluginCache },
-      { source: "imported", path: this.roots.imported }
+      { id: "codex-local", source: "codex-local", path: this.roots.codexLocal },
+      { id: "agent-local", source: "agent-local", path: this.roots.agentLocal },
+      { id: "superpowers-local", source: "superpowers-local", path: this.roots.superpowersLocal },
+      { id: "plugin-cache", source: "plugin-cache", path: this.roots.pluginCache },
+      ...this.roots.customLocal
+        .filter((root) => root.enabled !== false)
+        .map((root) => ({ id: root.id, source: "custom-local" as const, path: root.path, label: root.label })),
+      { id: "imported", source: "imported", path: this.roots.imported }
     ];
 
     const cache = this.enableCache ? await readScanCache(this.cachePath) : emptyScanCache();
@@ -221,7 +227,7 @@ export function buildSkillId(source: SkillSource, absolutePath: string): string 
 }
 
 function buildRootCacheKey(root: ScanRoot): string {
-  return crypto.createHash("sha256").update(`${root.source}:${path.resolve(root.path)}`).digest("hex");
+  return crypto.createHash("sha256").update(`${root.id}:${root.source}:${path.resolve(root.path)}`).digest("hex");
 }
 
 function emptyScanCache(): ScanCacheFile {
@@ -312,7 +318,7 @@ async function collectSkillDirectories(candidatePath: string, depth = 0): Promis
 }
 
 function isReadOnlySource(source: SkillSource): boolean {
-  return source !== "imported" && source !== "superpowers-local";
+  return source !== "imported" && source !== "superpowers-local" && source !== "custom-local";
 }
 
 function canSetSourceStatus(source: SkillSource): boolean {
@@ -328,13 +334,19 @@ function getSourceManagementNote(source: SkillSource): string | undefined {
     return "插件缓存由 Codex 插件管理，当前仅展示，不允许在这里开关。";
   }
 
+  if (source === "custom-local") {
+    return "自定义来源由你在设置里配置，适合团队或项目级 skills 目录。";
+  }
+
   return undefined;
 }
 
 function emptyDiagnostic(root: ScanRoot, lastScannedAt: string, exists: boolean): SkillSourceDiagnostic {
   return {
+    id: root.id,
     source: root.source,
     path: root.path,
+    label: root.label,
     exists,
     scannedCount: 0,
     invalidCount: 0,
@@ -468,6 +480,7 @@ function getSourceName(source: SkillSource): string {
     "codex-local": ".codex",
     "agent-local": ".agents",
     "superpowers-local": "Superpowers",
+    "custom-local": "自定义",
     "plugin-cache": "插件缓存"
   };
 

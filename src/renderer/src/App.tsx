@@ -51,6 +51,7 @@ import type {
   AiSettingsView,
   AiSkillAnalysis,
   AiSkillAnalysisRecord,
+  CustomSkillRoot,
   GitHubDiscoveryResult,
   GitHubSkillCandidate,
   MarketplaceSearchResult,
@@ -58,6 +59,8 @@ import type {
   MarketplaceSourceView,
   SettableSkillStatus,
   SkillRecord,
+  SkillRootSettingsInput,
+  SkillRootSettingsView,
   SkillScanDiagnostics,
   SkillSource,
   SkillStatus
@@ -77,6 +80,10 @@ type SkillUsageStats = {
   toggles: number;
   analyses: number;
   lastUsedAt?: string;
+};
+type RootSettingsDraftItem = SkillRootSettingsInput["customRoots"][number] & {
+  clientId: string;
+  id?: string;
 };
 
 const AI_BATCH_SIZE = 24;
@@ -107,6 +114,20 @@ function createOperationId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
+function createRootSettingsDraftItem(root?: Partial<CustomSkillRoot>): RootSettingsDraftItem {
+  return {
+    clientId: root?.id ?? createOperationId("root"),
+    id: root?.id,
+    path: root?.path ?? "",
+    label: root?.label ?? "",
+    enabled: root?.enabled ?? true
+  };
+}
+
+function normalizeRootPathKey(rootPath: string): string {
+  return rootPath.trim().replace(/[\\/]+$/, "").toLowerCase();
+}
+
 const sortLabels: Record<SortMode, string> = {
   smart: "智能优先",
   heat: "热度优先",
@@ -123,6 +144,7 @@ const sourceLabels: Record<SkillSource, string> = {
   "agent-local": ".agents",
   "superpowers-local": "Superpowers",
   "plugin-cache": "插件缓存",
+  "custom-local": "自定义",
   imported: "已导入"
 };
 
@@ -282,6 +304,10 @@ function getSourceMark(source: SkillSource): string {
 
   if (source === "plugin-cache") {
     return "P";
+  }
+
+  if (source === "custom-local") {
+    return "U";
   }
 
   return "M";
@@ -571,6 +597,7 @@ function getHeatScore(
     "agent-local": 6,
     "superpowers-local": 7,
     "plugin-cache": 5,
+    "custom-local": 7,
     imported: 8
   };
 
@@ -755,6 +782,8 @@ function getSkillsApi(): Window["skills"] {
     "importGitHubUrls",
     "searchMarketplace",
     "refreshMarketplaceSource",
+    "getRootSettings",
+    "saveRootSettings",
     "importLocalSkills",
     "repairBrokenSkills",
     "selectFolder",
@@ -848,6 +877,10 @@ export function App(): JSX.Element {
   const [marketplaceResult, setMarketplaceResult] = useState<MarketplaceSearchResult | null>(null);
   const [isSearchingMarketplace, setIsSearchingMarketplace] = useState(false);
   const [marketplaceInstallingId, setMarketplaceInstallingId] = useState<string | null>(null);
+  const [rootSettings, setRootSettings] = useState<SkillRootSettingsView>({ customRoots: [] });
+  const [rootSettingsDraft, setRootSettingsDraft] = useState<RootSettingsDraftItem[]>([]);
+  const [isRootSettingsOpen, setIsRootSettingsOpen] = useState(false);
+  const [isSavingRootSettings, setIsSavingRootSettings] = useState(false);
   const [isManagingLocal, setIsManagingLocal] = useState(false);
   const [isRepairing, setIsRepairing] = useState(false);
   const [aiSettings, setAiSettings] = useState<AiSettingsView | null>(null);
@@ -908,6 +941,7 @@ export function App(): JSX.Element {
 
   useEffect(() => {
     void loadSkills();
+    void loadRootSettings();
     void loadAiSettings();
     void loadAiAnalysisCache();
   }, []);
@@ -950,6 +984,13 @@ export function App(): JSX.Element {
           return;
         }
 
+        if (isRootSettingsOpen) {
+          if (!isSavingRootSettings) {
+            setIsRootSettingsOpen(false);
+          }
+          return;
+        }
+
         if (isGitHubDialogOpen) {
           closeGitHubImportDialog();
           return;
@@ -979,6 +1020,8 @@ export function App(): JSX.Element {
     isGitHubDialogOpen,
     isImportingGitHub,
     isMarketplaceOpen,
+    isRootSettingsOpen,
+    isSavingRootSettings,
     isSearchingMarketplace,
     marketplaceInstallingId,
     search,
@@ -1045,6 +1088,78 @@ export function App(): JSX.Element {
       setError(formatUserError(scanError, "扫描技能失败。"));
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function loadRootSettings(): Promise<void> {
+    try {
+      const settings = await getSkillsApi().getRootSettings();
+      setRootSettings(settings);
+      setRootSettingsDraft(settings.customRoots.map((root) => createRootSettingsDraftItem(root)));
+    } catch (settingsError) {
+      setError(formatUserError(settingsError, "读取来源设置失败。"));
+    }
+  }
+
+  function openRootSettings(): void {
+    setRootSettingsDraft(rootSettings.customRoots.map((root) => createRootSettingsDraftItem(root)));
+    setIsRootSettingsOpen(true);
+    setError(null);
+    setNotice(null);
+  }
+
+  async function addCustomRoot(): Promise<void> {
+    setError(null);
+    const folderPath = await getSkillsApi().selectFolder();
+    if (!folderPath) {
+      return;
+    }
+
+    const key = normalizeRootPathKey(folderPath);
+    setRootSettingsDraft((current) => {
+      if (current.some((root) => normalizeRootPathKey(root.path) === key)) {
+        return current;
+      }
+
+      return [...current, createRootSettingsDraftItem({ path: folderPath, enabled: true })];
+    });
+  }
+
+  function updateRootSettingsDraft(clientId: string, patch: Partial<RootSettingsDraftItem>): void {
+    setRootSettingsDraft((current) => current.map((root) => (root.clientId === clientId ? { ...root, ...patch } : root)));
+  }
+
+  function removeCustomRoot(clientId: string): void {
+    setRootSettingsDraft((current) => current.filter((root) => root.clientId !== clientId));
+  }
+
+  async function saveRootSettings(event: FormEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    setIsSavingRootSettings(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      const saved = await getSkillsApi().saveRootSettings({
+        customRoots: rootSettingsDraft.map((root) => ({
+          path: root.path,
+          label: root.label,
+          enabled: root.enabled
+        }))
+      });
+      setRootSettings(saved);
+      setRootSettingsDraft(saved.customRoots.map((root) => createRootSettingsDraftItem(root)));
+      setIsRootSettingsOpen(false);
+      await refreshSkillsFromDisk();
+      if (saved.customRoots.some((root) => root.enabled)) {
+        setSourceFilter("custom-local");
+        setStatusFilter("all");
+      }
+      setNotice(`来源设置已保存：自定义目录 ${saved.customRoots.length} 个。`);
+    } catch (settingsError) {
+      setError(formatUserError(settingsError, "保存来源设置失败。"));
+    } finally {
+      setIsSavingRootSettings(false);
     }
   }
 
@@ -1817,6 +1932,9 @@ export function App(): JSX.Element {
         <button type="button" aria-label="技能广场" className="rail-button" onClick={openMarketplace}>
           <Package aria-hidden="true" size={17} />
         </button>
+        <button type="button" aria-label="来源设置" className="rail-button" onClick={openRootSettings}>
+          <ServerCog aria-hidden="true" size={17} />
+        </button>
         <button type="button" aria-label="搜索技能" className="rail-button" onClick={() => searchInputRef.current?.focus()}>
           <Search aria-hidden="true" size={17} />
         </button>
@@ -1873,6 +1991,10 @@ export function App(): JSX.Element {
               <Package aria-hidden="true" size={17} />
               技能广场
             </button>
+            <button className="button secondary" type="button" onClick={openRootSettings}>
+              <ServerCog aria-hidden="true" size={17} />
+              来源设置
+            </button>
             <button className="button secondary ai-toolbar-button" type="button" onClick={openAiSettings}>
               <BrainCircuit aria-hidden="true" size={17} />
               {aiSettings?.enabled && aiSettings.hasApiKey
@@ -1913,6 +2035,7 @@ export function App(): JSX.Element {
               <option value="agent-local">.agents</option>
               <option value="superpowers-local">Superpowers</option>
               <option value="plugin-cache">插件缓存</option>
+              <option value="custom-local">自定义</option>
               <option value="imported">已导入</option>
             </select>
           </label>
@@ -2068,6 +2191,18 @@ export function App(): JSX.Element {
         />
       ) : null}
 
+      {isRootSettingsOpen ? (
+        <RootSettingsDialog
+          roots={rootSettingsDraft}
+          isSaving={isSavingRootSettings}
+          onAddRoot={() => void addCustomRoot()}
+          onChangeRoot={updateRootSettingsDraft}
+          onRemoveRoot={removeCustomRoot}
+          onCancel={() => setIsRootSettingsOpen(false)}
+          onSubmit={saveRootSettings}
+        />
+      ) : null}
+
       {confirmDialog ? (
         <AppConfirmDialog
           request={confirmDialog}
@@ -2192,13 +2327,13 @@ function SourceDiagnosticsPanel({
       <div className="source-diagnostic-grid">
         {roots.map((root) => (
           <button
-            key={root.source}
+            key={root.id}
             className={`source-diagnostic-card ${root.exists ? "" : "is-missing"} ${root.error ? "has-error" : ""}`}
             type="button"
             onClick={() => onSelectSource(root.source)}
           >
             <div className="source-diagnostic-topline">
-              <span className={`source-pill source-${root.source}`}>{sourceLabels[root.source]}</span>
+              <span className={`source-pill source-${root.source}`}>{root.label || sourceLabels[root.source]}</span>
               <strong>{root.exists ? "存在" : "缺失"}</strong>
             </div>
             <code title={root.path}>{root.path}</code>
@@ -2239,6 +2374,125 @@ function SourceDiagnosticsPanel({
         </div>
       </div>
     </section>
+  );
+}
+
+function RootSettingsDialog({
+  roots,
+  isSaving,
+  onAddRoot,
+  onChangeRoot,
+  onRemoveRoot,
+  onCancel,
+  onSubmit
+}: {
+  roots: RootSettingsDraftItem[];
+  isSaving: boolean;
+  onAddRoot: () => void;
+  onChangeRoot: (clientId: string, patch: Partial<RootSettingsDraftItem>) => void;
+  onRemoveRoot: (clientId: string) => void;
+  onCancel: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+}): JSX.Element {
+  const activeCount = roots.filter((root) => root.enabled !== false && root.path.trim()).length;
+
+  return (
+    <div className="modal-backdrop root-settings-backdrop" role="presentation" onMouseDown={onCancel}>
+      <form
+        className="root-settings-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="root-settings-title"
+        aria-describedby="root-settings-description"
+        onSubmit={(event) => void onSubmit(event)}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="root-settings-header">
+          <div className="root-settings-icon" aria-hidden="true">
+            <ServerCog size={22} />
+          </div>
+          <div>
+            <h2 id="root-settings-title">来源设置</h2>
+            <p id="root-settings-description">添加团队、项目或其它本地 skills 目录，保存后作为“自定义”来源参与扫描。</p>
+          </div>
+          <button className="icon-button" type="button" aria-label="关闭来源设置" onClick={onCancel} disabled={isSaving}>
+            <X aria-hidden="true" size={18} />
+          </button>
+        </div>
+
+        <div className="root-settings-summary">
+          <span>自定义目录 {roots.length}</span>
+          <span>启用 {activeCount}</span>
+        </div>
+
+        <div className="root-settings-list" role="list" aria-label="自定义 skill 来源">
+          {roots.length === 0 ? (
+            <div className="root-settings-empty">
+              <FolderOpen aria-hidden="true" size={20} />
+              <span>还没有自定义来源</span>
+            </div>
+          ) : (
+            roots.map((root) => (
+              <div className="root-settings-row" role="listitem" key={root.clientId}>
+                <label className="root-toggle">
+                  <input
+                    type="checkbox"
+                    checked={root.enabled !== false}
+                    onChange={(event) => onChangeRoot(root.clientId, { enabled: event.target.checked })}
+                    disabled={isSaving}
+                  />
+                  <span>启用</span>
+                </label>
+                <label className="root-settings-field">
+                  <span>显示名</span>
+                  <input
+                    type="text"
+                    value={root.label ?? ""}
+                    onChange={(event) => onChangeRoot(root.clientId, { label: event.target.value })}
+                    placeholder="可选"
+                    disabled={isSaving}
+                  />
+                </label>
+                <label className="root-settings-field root-path-field">
+                  <span>目录路径</span>
+                  <input
+                    type="text"
+                    value={root.path}
+                    onChange={(event) => onChangeRoot(root.clientId, { path: event.target.value })}
+                    placeholder="选择或粘贴 skills 目录"
+                    disabled={isSaving}
+                  />
+                </label>
+                <button
+                  className="icon-button root-remove-button"
+                  type="button"
+                  aria-label="删除这个自定义来源"
+                  onClick={() => onRemoveRoot(root.clientId)}
+                  disabled={isSaving}
+                >
+                  <X aria-hidden="true" size={17} />
+                </button>
+              </div>
+            ))
+          )}
+        </div>
+
+        <div className="root-settings-actions">
+          <button className="button secondary" type="button" onClick={onAddRoot} disabled={isSaving}>
+            <FolderOpen aria-hidden="true" size={17} />
+            添加目录
+          </button>
+          <div>
+            <button className="button secondary" type="button" onClick={onCancel} disabled={isSaving}>
+              取消
+            </button>
+            <button className="button primary" type="submit" disabled={isSaving}>
+              {isSaving ? "保存中..." : "保存并重扫"}
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
   );
 }
 

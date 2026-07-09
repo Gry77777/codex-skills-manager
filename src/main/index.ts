@@ -92,6 +92,8 @@ function registerIpc(): void {
   ipcMain.handle("skills:refreshMarketplaceSource", (_event, sourceId: string, input) =>
     controller.refreshMarketplaceSource(sourceId, input)
   );
+  ipcMain.handle("skills:getRootSettings", () => controller.getRootSettings());
+  ipcMain.handle("skills:saveRootSettings", (_event, settings) => controller.saveRootSettings(settings));
   ipcMain.handle("skills:importLocalSkills", () => controller.importLocalSkills());
   ipcMain.handle("skills:repairBrokenSkills", () => controller.repairBrokenSkills());
   ipcMain.handle("skills:selectFolder", () => controller.selectFolder());

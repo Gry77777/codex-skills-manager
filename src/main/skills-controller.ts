@@ -8,6 +8,8 @@ import type {
   MarketplaceSearchResult,
   SettableSkillStatus,
   SkillRecord,
+  SkillRootSettingsInput,
+  SkillRootSettingsView,
   SkillScanResult,
   SkillRepairSummary
 } from "../shared/types.js";
@@ -18,19 +20,20 @@ import { SkillImporter } from "./skill-importer.js";
 import { SkillMarketplace } from "./skill-marketplace.js";
 import { SkillRepairer } from "./skill-repairer.js";
 import { SkillRegistry } from "./skill-registry.js";
+import { SkillRootSettingsStore } from "./skill-root-settings.js";
 import { SkillScanner } from "./skill-scanner.js";
 
 const GITHUB_IMPORT_CONCURRENCY = 3;
 
 export class SkillsController {
-  private readonly scanner = new SkillScanner(getSkillRoots());
   private readonly registry = new SkillRegistry();
   private readonly importer = new SkillImporter();
   private readonly marketplace = new SkillMarketplace();
   private readonly repairer = new SkillRepairer();
+  private readonly rootSettings = new SkillRootSettingsStore();
 
   async scanWithDiagnostics(): Promise<SkillScanResult> {
-    const result = await this.scanner.scanWithDiagnostics();
+    const result = await (await this.createScanner()).scanWithDiagnostics();
     return {
       skills: await this.registry.list(result.skills),
       diagnostics: result.diagnostics
@@ -43,6 +46,14 @@ export class SkillsController {
 
   async list(): Promise<SkillRecord[]> {
     return this.scan();
+  }
+
+  async getRootSettings(): Promise<SkillRootSettingsView> {
+    return this.rootSettings.read();
+  }
+
+  async saveRootSettings(settings: SkillRootSettingsInput): Promise<SkillRootSettingsView> {
+    return this.rootSettings.save(settings);
   }
 
   async setStatus(id: string, status: SettableSkillStatus): Promise<SkillRecord> {
@@ -198,6 +209,15 @@ export class SkillsController {
     }
 
     return skill;
+  }
+
+  private async createScanner(): Promise<SkillScanner> {
+    const roots = getSkillRoots();
+    const settings = await this.rootSettings.read();
+    return new SkillScanner({
+      ...roots,
+      customLocal: settings.customRoots
+    });
   }
 }
 

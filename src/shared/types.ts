@@ -1,4 +1,23 @@
-export type SkillSource = "codex-local" | "agent-local" | "superpowers-local" | "plugin-cache" | "imported";
+export type SkillSource = "codex-local" | "agent-local" | "superpowers-local" | "plugin-cache" | "custom-local" | "imported";
+
+export type CustomSkillRoot = {
+  id: string;
+  path: string;
+  label?: string;
+  enabled: boolean;
+};
+
+export type SkillRootSettingsView = {
+  customRoots: CustomSkillRoot[];
+};
+
+export type SkillRootSettingsInput = {
+  customRoots: Array<{
+    path: string;
+    label?: string;
+    enabled?: boolean;
+  }>;
+};
 
 export type SkillStatus = "enabled" | "disabled" | "quarantined" | "invalid";
 
@@ -49,8 +68,10 @@ export type SkillRecord = {
 };
 
 export type SkillSourceDiagnostic = {
+  id: string;
   source: SkillSource;
   path: string;
+  label?: string;
   exists: boolean;
   scannedCount: number;
   invalidCount: number;
@@ -320,6 +341,8 @@ export type SkillsApi = {
   importGitHubUrls: (githubUrls: string[]) => Promise<SkillRecord[]>;
   searchMarketplace: (input?: MarketplaceSearchInput) => Promise<MarketplaceSearchResult>;
   refreshMarketplaceSource: (sourceId: string, input?: MarketplaceSearchInput) => Promise<MarketplaceSearchResult>;
+  getRootSettings: () => Promise<SkillRootSettingsView>;
+  saveRootSettings: (settings: SkillRootSettingsInput) => Promise<SkillRootSettingsView>;
   importLocalSkills: () => Promise<BulkImportSummary>;
   repairBrokenSkills: () => Promise<SkillRepairSummary>;
   selectFolder: () => Promise<string | null>;

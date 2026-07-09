@@ -98,6 +98,42 @@ describe("SkillScanner", () => {
     ]);
   });
 
+  it("scans configured custom skill roots as manageable custom-local sources", async () => {
+    const root = await makeTempDir();
+    const customRoot = path.join(root, "custom-skills");
+    const disabledRoot = path.join(root, "disabled-skills");
+    await writeSkill(path.join(customRoot, "custom-one"), "custom-one", "Custom skill");
+    await writeSkill(path.join(disabledRoot, "custom-disabled"), "custom-disabled", "Disabled custom skill");
+
+    const scanner = new SkillScanner(skillRoots({
+      customLocal: [
+        { id: "custom-root", path: customRoot, label: "Team skills", enabled: true },
+        { id: "disabled-root", path: disabledRoot, label: "Disabled skills", enabled: false }
+      ]
+    }));
+    const result = await scanner.scanWithDiagnostics();
+    const [skill] = result.skills;
+
+    expect(skill).toMatchObject({
+      name: "custom-one",
+      source: "custom-local",
+      readonly: false,
+      canSetStatus: true
+    });
+    expect(result.diagnostics.roots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "custom-root",
+          source: "custom-local",
+          path: customRoot,
+          scannedCount: 1
+        })
+      ])
+    );
+    expect(result.skills.some((record) => record.name === "custom-disabled")).toBe(false);
+    expect(result.diagnostics.roots.some((rootDiagnostic) => rootDiagnostic.id === "disabled-root")).toBe(false);
+  });
+
   it("returns scan diagnostics for every configured source root", async () => {
     const root = await makeTempDir();
     const codexRoot = path.join(root, ".codex", "skills");
@@ -336,6 +372,7 @@ function skillRoots(overrides: Partial<SkillRoots>): SkillRoots {
     superpowersLocal: "missing",
     pluginCache: "missing",
     imported: "missing",
+    customLocal: [],
     ...overrides
   };
 }

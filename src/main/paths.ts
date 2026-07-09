@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import type { CustomSkillRoot } from "../shared/types.js";
 
 export type SkillRoots = {
   codexLocal: string;
@@ -7,6 +8,7 @@ export type SkillRoots = {
   superpowersLocal: string;
   pluginCache: string;
   imported: string;
+  customLocal: CustomSkillRoot[];
 };
 
 export function getAppDataRoot(): string {
@@ -37,6 +39,10 @@ export function getSkillScanCachePath(): string {
   return path.join(getStateRoot(), "scan-cache.json");
 }
 
+export function getSkillRootSettingsPath(): string {
+  return path.join(getStateRoot(), "root-settings.json");
+}
+
 export function getImportedSkillsRoot(): string {
   return path.join(getStateRoot(), "imported-skills");
 }
@@ -49,6 +55,7 @@ export function getSkillRoots(): SkillRoots {
     agentLocal: path.join(home, ".agents", "skills"),
     superpowersLocal: path.join(home, ".codex", "superpowers", "skills"),
     pluginCache: path.join(home, ".codex", "plugins", "cache"),
-    imported: getImportedSkillsRoot()
+    imported: getImportedSkillsRoot(),
+    customLocal: []
   };
 }
