@@ -3317,10 +3317,29 @@ h1 {
 }
 
 .github-candidate-copy strong {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
   overflow-wrap: anywhere;
   color: #101827;
   font-size: 13px;
   line-height: 1.25;
+}
+
+.github-candidate-badge {
+  display: inline-flex !important;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  color: var(--accent-strong) !important;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-border);
+  border-radius: 999px;
+  font-size: 11px !important;
+  font-weight: 760;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .github-candidate-copy span {

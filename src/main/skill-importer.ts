@@ -131,20 +131,30 @@ export class SkillImporter {
     }
 
     await fs.mkdir(this.importsRoot, { recursive: true });
-    const targetPath = await this.getAvailableTargetPath(frontmatter.name, spec.sourceUrl);
+    const existingImports = await this.readGitHubImports();
+    const existingPath = existingImports.get(normalizeGitHubSourceUrl(spec.sourceUrl));
+    const targetPath = existingPath ?? (await this.getAvailableTargetPath(frontmatter.name, spec.sourceUrl));
+    const stagingPath = existingPath
+      ? path.join(this.importsRoot, `.github-update-${toSafeDirectoryName(frontmatter.name)}-${shortHash(`${spec.sourceUrl}:${Date.now()}`)}`)
+      : targetPath;
+    const existingStatus = existingPath ? await readSkillDirectoryStatus(existingPath) : "disabled";
+    let backupPath: string | null = null;
 
     try {
-      await downloadGitHubDirectory(spec, targetPath);
+      await downloadGitHubDirectory(spec, stagingPath);
 
-      const activePath = path.join(targetPath, "SKILL.md");
-      const disabledPath = path.join(targetPath, "SKILL.md.disabled");
+      const activePath = path.join(stagingPath, "SKILL.md");
+      const disabledPath = path.join(stagingPath, "SKILL.md.disabled");
       if (!(await exists(activePath))) {
         throw new Error("GitHub 链接必须指向包含 SKILL.md 的目录。");
       }
 
-      await fs.rename(activePath, disabledPath);
+      if (existingStatus === "disabled") {
+        await fs.rename(activePath, disabledPath);
+      }
+
       await fs.writeFile(
-        path.join(targetPath, MANIFEST_FILE),
+        path.join(stagingPath, MANIFEST_FILE),
         `${JSON.stringify(
           {
             source: "github",
@@ -153,15 +163,27 @@ export class SkillImporter {
             ref: spec.ref,
             path: spec.path,
             originalName: frontmatter.name.trim(),
-            importedAt: new Date().toISOString()
+            importedAt: existingPath ? await readOriginalImportedAt(existingPath) : new Date().toISOString(),
+            updatedAt: existingPath ? new Date().toISOString() : undefined
           },
           null,
           2
         )}\n`,
         "utf8"
       );
+
+      if (existingPath) {
+        backupPath = path.join(this.importsRoot, `.github-backup-${path.basename(existingPath)}-${shortHash(String(Date.now()))}`);
+        await fs.rename(existingPath, backupPath);
+        await fs.rename(stagingPath, existingPath);
+        await fs.rm(backupPath, { recursive: true, force: true });
+        backupPath = null;
+      }
     } catch (error) {
-      await fs.rm(targetPath, { recursive: true, force: true });
+      await fs.rm(stagingPath, { recursive: true, force: true });
+      if (backupPath) {
+        await fs.rename(backupPath, targetPath).catch(() => undefined);
+      }
       throw error;
     }
 
@@ -178,7 +200,7 @@ export class SkillImporter {
       }),
       path: targetPath,
       source: "imported",
-      status: "disabled",
+      status: existingStatus,
       readonly: false,
       canSetStatus: true,
       valid: true,
@@ -194,6 +216,7 @@ export class SkillImporter {
     const ref = spec.ref ?? (await fetchGitHubDefaultBranch(spec, signal));
     const resolvedSpec: GitHubSkillSpec = { ...spec, ref };
     const candidates = await discoverGitHubSkillCandidates(resolvedSpec, signal);
+    const importedBySourceUrl = await this.readGitHubImports();
 
     return {
       input: githubUrl,
@@ -201,7 +224,11 @@ export class SkillImporter {
       ref,
       rootPath: resolvedSpec.path,
       sourceUrl: githubRepositorySourceUrl(resolvedSpec),
-      candidates
+      candidates: candidates.map((candidate) => ({
+        ...candidate,
+        alreadyImported: importedBySourceUrl.has(normalizeGitHubSourceUrl(candidate.sourceUrl)),
+        importedPath: importedBySourceUrl.get(normalizeGitHubSourceUrl(candidate.sourceUrl))
+      }))
     };
   }
 
@@ -339,6 +366,34 @@ export class SkillImporter {
     return sourcePaths;
   }
 
+  private async readGitHubImports(): Promise<Map<string, string>> {
+    const imports = new Map<string, string>();
+
+    if (!(await exists(this.importsRoot))) {
+      return imports;
+    }
+
+    const entries = await fs.readdir(this.importsRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+
+      const targetPath = path.join(this.importsRoot, entry.name);
+      try {
+        const raw = await fs.readFile(path.join(targetPath, MANIFEST_FILE), "utf8");
+        const parsed = JSON.parse(raw) as { source?: string; sourceUrl?: string };
+        if (parsed.source === "github" && parsed.sourceUrl) {
+          imports.set(normalizeGitHubSourceUrl(parsed.sourceUrl), targetPath);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    return imports;
+  }
+
   private async writeManagedManifest(
     targetPath: string,
     manifest: { source: Extract<SkillSource, "codex-local" | "agent-local">; sourcePath: string; originalName: string }
@@ -362,6 +417,24 @@ async function syncManagedCopyStatus(sourcePath: string, targetPath: string): Pr
 
   if (await exists(sourceDisabledPath)) {
     await setSkillDirectoryPhysicalStatus(targetPath, "disabled");
+  }
+}
+
+async function readSkillDirectoryStatus(skillPath: string): Promise<"enabled" | "disabled"> {
+  if (await exists(path.join(skillPath, "SKILL.md"))) {
+    return "enabled";
+  }
+
+  return "disabled";
+}
+
+async function readOriginalImportedAt(skillPath: string): Promise<string> {
+  try {
+    const raw = await fs.readFile(path.join(skillPath, MANIFEST_FILE), "utf8");
+    const parsed = JSON.parse(raw) as { importedAt?: string };
+    return parsed.importedAt ?? new Date().toISOString();
+  } catch {
+    return new Date().toISOString();
   }
 }
 

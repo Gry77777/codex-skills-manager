@@ -3456,7 +3456,7 @@ function GitHubImportDialog({
 
         <div className="github-import-note">
           {discovery
-            ? "只会导入勾选的有效技能；导入内容会复制到托管目录，默认保持关闭。"
+            ? "只会导入勾选的有效技能；已导入项会更新已有托管副本，未导入项默认保持关闭。"
             : "会先识别仓库内的 SKILL.md；找到多个技能时可勾选后批量导入。"}
         </div>
 
@@ -3549,7 +3549,10 @@ function GitHubCandidateItem({
     <label className={`github-candidate-item ${candidate.valid ? "" : "invalid"}`} role="listitem">
       <input type="checkbox" checked={checked} disabled={disabled} onChange={onToggle} />
       <span className="github-candidate-copy">
-        <strong>{candidate.name}</strong>
+        <strong>
+          {candidate.name}
+          {candidate.alreadyImported ? <span className="github-candidate-badge">已导入</span> : null}
+        </strong>
         <span>{candidate.description || "暂无描述"}</span>
         <code>{candidate.path || "/"}</code>
         {candidate.issues.length > 0 ? (

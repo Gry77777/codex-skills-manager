@@ -101,6 +101,68 @@ describe("SkillImporter", () => {
     expect(await fileExists(path.join(imported.path, "README.md"))).toBe(true);
   });
 
+  it("updates an existing GitHub import instead of creating a duplicate folder", async () => {
+    const root = await makeTempDir();
+    const imports = path.join(root, "imports");
+    let readme = "readme-v1";
+    const markdown = "---\nname: github-skill\ndescription: GitHub imported skill\n---\nUse it.\n";
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const href = String(url);
+
+        if (href.includes("/contents/skills/github-skill/SKILL.md?")) {
+          return jsonResponse({
+            type: "file",
+            name: "SKILL.md",
+            path: "skills/github-skill/SKILL.md",
+            download_url: "https://raw.example/SKILL.md",
+            size: markdown.length
+          });
+        }
+
+        if (href.includes("/contents/skills/github-skill?")) {
+          return jsonResponse([
+            {
+              type: "file",
+              name: "SKILL.md",
+              path: "skills/github-skill/SKILL.md",
+              download_url: "https://raw.example/SKILL.md",
+              size: markdown.length
+            },
+            {
+              type: "file",
+              name: "README.md",
+              path: "skills/github-skill/README.md",
+              download_url: "https://raw.example/README.md",
+              size: readme.length
+            }
+          ]);
+        }
+
+        if (href === "https://raw.example/SKILL.md") {
+          return textResponse(markdown);
+        }
+
+        if (href === "https://raw.example/README.md") {
+          return textResponse(readme);
+        }
+
+        return new Response("not found", { status: 404, statusText: "Not Found" });
+      })
+    );
+
+    const importer = new SkillImporter(imports);
+    const first = await importer.importGitHubUrl("https://github.com/acme/repo/tree/main/skills/github-skill");
+    readme = "readme-v2";
+    const second = await importer.importGitHubUrl("https://github.com/acme/repo/tree/main/skills/github-skill");
+
+    expect(second.path).toBe(first.path);
+    expect(await fs.readFile(path.join(second.path, "README.md"), "utf8")).toBe("readme-v2");
+    expect((await fs.readdir(imports)).filter((entry) => entry.startsWith("github-skill"))).toHaveLength(1);
+  });
+
   it("discovers skills from a repository markdown GitHub link", async () => {
     const root = await makeTempDir();
     const imports = path.join(root, "imports");
@@ -175,6 +237,49 @@ describe("SkillImporter", () => {
     );
     expect(fetch).not.toHaveBeenCalledWith("https://raw.example/gitnexus-cli/SKILL.md", expect.anything());
     expect(fetch).not.toHaveBeenCalledWith("https://raw.example/gitnexus-debugging/SKILL.md", expect.anything());
+  });
+
+  it("marks discovered GitHub candidates that are already imported", async () => {
+    const root = await makeTempDir();
+    const imports = path.join(root, "imports");
+    await fs.mkdir(path.join(imports, "gitnexus-cli"), { recursive: true });
+    await fs.writeFile(
+      path.join(imports, "gitnexus-cli", ".codex-skills-manager.json"),
+      `${JSON.stringify({
+        source: "github",
+        sourceUrl: "https://github.com/acme/repo/tree/main/.claude/skills/gitnexus/gitnexus-cli"
+      })}\n`,
+      "utf8"
+    );
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL) => {
+        const href = String(url);
+
+        if (href === "https://api.github.com/repos/acme/repo") {
+          return jsonResponse({ default_branch: "main" });
+        }
+
+        if (href === "https://api.github.com/repos/acme/repo/git/trees/main?recursive=1") {
+          return jsonResponse({
+            tree: [
+              { type: "blob", path: ".claude/skills/gitnexus/gitnexus-cli/SKILL.md" },
+              { type: "blob", path: ".claude/skills/gitnexus/gitnexus-debugging/SKILL.md" }
+            ],
+            truncated: false
+          });
+        }
+
+        return new Response("not found", { status: 404, statusText: "Not Found" });
+      })
+    );
+
+    const importer = new SkillImporter(imports);
+    const result = await importer.discoverGitHubSkills("https://github.com/acme/repo");
+
+    expect(result.candidates.find((candidate) => candidate.path.endsWith("gitnexus-cli"))?.alreadyImported).toBe(true);
+    expect(result.candidates.find((candidate) => candidate.path.endsWith("gitnexus-debugging"))?.alreadyImported).toBe(false);
   });
 
   it("does not overwrite an existing imported skill folder", async () => {

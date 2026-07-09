@@ -127,6 +127,8 @@ export type GitHubSkillCandidate = {
   sourceUrl: string;
   valid: boolean;
   issues: SkillIssue[];
+  alreadyImported?: boolean;
+  importedPath?: string;
 };
 
 export type GitHubDiscoveryResult = {
