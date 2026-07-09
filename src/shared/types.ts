@@ -56,6 +56,8 @@ export type SkillSourceDiagnostic = {
   invalidCount: number;
   issueCount: number;
   lastScannedAt: string;
+  cacheHit?: boolean;
+  cacheUpdatedAt?: string;
   error?: string;
 };
 

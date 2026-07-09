@@ -33,6 +33,10 @@ export function getMarketplaceCachePath(): string {
   return path.join(getStateRoot(), "marketplace-cache.json");
 }
 
+export function getSkillScanCachePath(): string {
+  return path.join(getStateRoot(), "scan-cache.json");
+}
+
 export function getImportedSkillsRoot(): string {
   return path.join(getStateRoot(), "imported-skills");
 }

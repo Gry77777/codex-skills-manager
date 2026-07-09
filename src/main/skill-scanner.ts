@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { SkillIssue, SkillRecord, SkillScanResult, SkillSource, SkillSourceDiagnostic } from "../shared/types.js";
-import type { SkillRoots } from "./paths.js";
+import { getSkillScanCachePath, type SkillRoots } from "./paths.js";
 import { getPrimarySkillMarkdown, readSkillDiskState } from "./skill-disk-state.js";
 import { analyzeSkillHealth } from "./skill-health-analyzer.js";
 import { buildSkillSummaryZh } from "./skill-summary.js";
@@ -16,6 +16,27 @@ type ScanRoot = {
 type RootScanResult = {
   skills: SkillRecord[];
   diagnostic: SkillSourceDiagnostic;
+  cacheKey: string;
+  cacheEntry?: ScanCacheEntry;
+};
+
+type SkillScannerOptions = {
+  cachePath?: string;
+  enableCache?: boolean;
+};
+
+type ScanCacheFile = {
+  version: 1;
+  entries: Record<string, ScanCacheEntry>;
+};
+
+type ScanCacheEntry = {
+  source: SkillSource;
+  rootPath: string;
+  fingerprint: string;
+  skills: SkillRecord[];
+  diagnostic: SkillSourceDiagnostic;
+  scannedAt: string;
 };
 
 const sourcePriority: Record<SkillSource, number> = {
@@ -27,7 +48,16 @@ const sourcePriority: Record<SkillSource, number> = {
 };
 
 export class SkillScanner {
-  constructor(private readonly roots: SkillRoots) {}
+  private readonly cachePath: string;
+  private readonly enableCache: boolean;
+
+  constructor(
+    private readonly roots: SkillRoots,
+    options: SkillScannerOptions = {}
+  ) {
+    this.cachePath = options.cachePath ?? getSkillScanCachePath();
+    this.enableCache = options.enableCache ?? true;
+  }
 
   async scan(): Promise<SkillRecord[]> {
     return (await this.scanWithDiagnostics()).skills;
@@ -43,8 +73,24 @@ export class SkillScanner {
       { source: "imported", path: this.roots.imported }
     ];
 
-    const rootResults = await Promise.all(roots.map((root) => this.scanRoot(root, now)));
+    const cache = this.enableCache ? await readScanCache(this.cachePath) : emptyScanCache();
+    const rootResults = await Promise.all(roots.map((root) => this.scanRoot(root, now, cache)));
     const skills = markNameConflicts(rootResults.flatMap((result) => result.skills));
+
+    if (this.enableCache) {
+      const nextCache = {
+        version: 1 as const,
+        entries: {
+          ...cache.entries,
+          ...Object.fromEntries(
+            rootResults
+              .filter((result): result is RootScanResult & { cacheEntry: ScanCacheEntry } => Boolean(result.cacheEntry))
+              .map((result) => [result.cacheKey, result.cacheEntry])
+          )
+        }
+      };
+      await writeScanCache(this.cachePath, nextCache).catch(() => undefined);
+    }
 
     return {
       skills,
@@ -57,15 +103,33 @@ export class SkillScanner {
     };
   }
 
-  private async scanRoot(root: ScanRoot, now: string): Promise<RootScanResult> {
+  private async scanRoot(root: ScanRoot, now: string, cache: ScanCacheFile): Promise<RootScanResult> {
+    const cacheKey = buildRootCacheKey(root);
     if (!(await exists(root.path))) {
       return {
         skills: [],
-        diagnostic: emptyDiagnostic(root, now, false)
+        diagnostic: emptyDiagnostic(root, now, false),
+        cacheKey
       };
     }
 
     try {
+      const fingerprint = await fingerprintDirectory(root.path);
+      const cached = cache.entries[cacheKey];
+      if (cached?.fingerprint === fingerprint && cached.source === root.source && path.resolve(cached.rootPath) === path.resolve(root.path)) {
+        return {
+          skills: cached.skills,
+          diagnostic: {
+            ...cached.diagnostic,
+            lastScannedAt: now,
+            cacheHit: true,
+            cacheUpdatedAt: cached.scannedAt
+          },
+          cacheKey,
+          cacheEntry: cached
+        };
+      }
+
       const entries = await fs.readdir(root.path, { withFileTypes: true });
       const directories = entries.filter((entry) => entry.isDirectory());
       const skillDirectories = (
@@ -81,21 +145,45 @@ export class SkillScanner {
         skillDirectories.map((skillPath) => this.scanSkillDirectory(root.source, skillPath, now))
       ));
 
+      const diagnostic: SkillSourceDiagnostic = {
+        ...emptyDiagnostic(root, now, true),
+        scannedCount: records.length,
+        invalidCount: records.filter((record) => !record.valid).length,
+        issueCount: records.reduce((count, record) => count + record.issues.length, 0),
+        cacheHit: false,
+        cacheUpdatedAt: now
+      };
       return {
         skills: records,
-        diagnostic: {
-          ...emptyDiagnostic(root, now, true),
-          scannedCount: records.length,
-          invalidCount: records.filter((record) => !record.valid).length,
-          issueCount: records.reduce((count, record) => count + record.issues.length, 0)
+        diagnostic,
+        cacheKey,
+        cacheEntry: {
+          source: root.source,
+          rootPath: root.path,
+          fingerprint,
+          skills: records,
+          diagnostic,
+          scannedAt: now
         }
       };
     } catch (error) {
+      const diagnostic = {
+        ...emptyDiagnostic(root, now, true),
+        cacheHit: false,
+        cacheUpdatedAt: now,
+        error: error instanceof Error ? error.message : "Unknown scan error"
+      };
       return {
         skills: [],
-        diagnostic: {
-          ...emptyDiagnostic(root, now, true),
-          error: error instanceof Error ? error.message : "Unknown scan error"
+        diagnostic,
+        cacheKey,
+        cacheEntry: {
+          source: root.source,
+          rootPath: root.path,
+          fingerprint: "error",
+          skills: [],
+          diagnostic,
+          scannedAt: now
         }
       };
     }
@@ -132,6 +220,32 @@ export function buildSkillId(source: SkillSource, absolutePath: string): string 
   return crypto.createHash("sha256").update(`${source}:${path.resolve(absolutePath)}`).digest("hex");
 }
 
+function buildRootCacheKey(root: ScanRoot): string {
+  return crypto.createHash("sha256").update(`${root.source}:${path.resolve(root.path)}`).digest("hex");
+}
+
+function emptyScanCache(): ScanCacheFile {
+  return { version: 1, entries: {} };
+}
+
+async function readScanCache(cachePath: string): Promise<ScanCacheFile> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(cachePath, "utf8")) as ScanCacheFile;
+    if (parsed.version !== 1 || typeof parsed.entries !== "object" || parsed.entries === null) {
+      return emptyScanCache();
+    }
+
+    return parsed;
+  } catch (error) {
+    return emptyScanCache();
+  }
+}
+
+async function writeScanCache(cachePath: string, cache: ScanCacheFile): Promise<void> {
+  await fs.mkdir(path.dirname(cachePath), { recursive: true });
+  await fs.writeFile(cachePath, `${JSON.stringify(cache, null, 2)}\n`, "utf8");
+}
+
 async function exists(targetPath: string): Promise<boolean> {
   try {
     await fs.access(targetPath);
@@ -139,6 +253,36 @@ async function exists(targetPath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function fingerprintDirectory(directory: string): Promise<string> {
+  const hash = crypto.createHash("sha256");
+
+  async function walk(current: string): Promise<void> {
+    const entries = await fs.readdir(current, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      if (entry.name === ".git" || entry.name === "node_modules") {
+        continue;
+      }
+
+      const entryPath = path.join(current, entry.name);
+      const stat = await fs.stat(entryPath);
+      const relative = path.relative(directory, entryPath);
+      hash.update(relative);
+      hash.update(entry.isDirectory() ? "d" : "f");
+      hash.update(String(stat.size));
+      hash.update(String(Math.trunc(stat.mtimeMs)));
+
+      if (entry.isDirectory()) {
+        await walk(entryPath);
+      }
+    }
+  }
+
+  await walk(directory);
+  return hash.digest("hex");
 }
 
 async function collectSkillDirectories(candidatePath: string, depth = 0): Promise<string[]> {

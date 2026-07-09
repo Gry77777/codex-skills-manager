@@ -2206,6 +2206,7 @@ function SourceDiagnosticsPanel({
               <span>技能 {root.scannedCount}</span>
               <span>无效 {root.invalidCount}</span>
               <span>问题 {root.issueCount}</span>
+              <span>{root.cacheHit ? "缓存" : "已重扫"}</span>
             </div>
             <div className="source-diagnostic-footer">
               <span>{formatDateTime(root.lastScannedAt)}</span>

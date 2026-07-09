@@ -125,6 +125,48 @@ describe("SkillScanner", () => {
     expect(result.diagnostics.roots.every((rootDiagnostic) => rootDiagnostic.lastScannedAt)).toBe(true);
   });
 
+  it("reuses cached root scan records when the root fingerprint is unchanged", async () => {
+    const root = await makeTempDir();
+    const codexRoot = path.join(root, ".codex", "skills");
+    const cachePath = path.join(root, "scan-cache.json");
+    await writeSkill(path.join(codexRoot, "live"), "live", "Live skill");
+
+    const scanner = new SkillScanner(skillRoots({ codexLocal: codexRoot }), { cachePath });
+    await scanner.scanWithDiagnostics();
+
+    const rawCache = JSON.parse(await fs.readFile(cachePath, "utf8")) as {
+      entries: Record<string, { skills: Array<{ name: string }> }>;
+    };
+    const codexEntry = Object.values(rawCache.entries).find((entry) => entry.skills[0]?.name === "live");
+    expect(codexEntry).toBeDefined();
+    codexEntry!.skills[0]!.name = "cached-live";
+    await fs.writeFile(cachePath, `${JSON.stringify(rawCache, null, 2)}\n`, "utf8");
+
+    const cached = await scanner.scanWithDiagnostics();
+    const codexDiagnostic = cached.diagnostics.roots.find((item) => item.source === "codex-local");
+
+    expect(cached.skills.map((skill) => skill.name)).toContain("cached-live");
+    expect(codexDiagnostic?.cacheHit).toBe(true);
+  });
+
+  it("invalidates cached root scan records when SKILL.md changes", async () => {
+    const root = await makeTempDir();
+    const codexRoot = path.join(root, ".codex", "skills");
+    const cachePath = path.join(root, "scan-cache.json");
+    const skillPath = path.join(codexRoot, "live");
+    await writeSkill(skillPath, "live", "Live skill");
+
+    const scanner = new SkillScanner(skillRoots({ codexLocal: codexRoot }), { cachePath });
+    await scanner.scanWithDiagnostics();
+    await fs.writeFile(path.join(skillPath, "SKILL.md"), "---\nname: changed\ndescription: Changed skill\n---\n", "utf8");
+
+    const rescanned = await scanner.scanWithDiagnostics();
+    const codexDiagnostic = rescanned.diagnostics.roots.find((item) => item.source === "codex-local");
+
+    expect(rescanned.skills.map((skill) => skill.name)).toContain("changed");
+    expect(codexDiagnostic?.cacheHit).toBe(false);
+  });
+
   it("marks duplicate names with the selected source priority winner and shadowed records", async () => {
     const root = await makeTempDir();
     const codexRoot = path.join(root, ".codex", "skills");
