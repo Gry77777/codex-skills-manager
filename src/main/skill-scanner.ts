@@ -77,9 +77,9 @@ export class SkillScanner {
           })
         )
       ).flat();
-      const records = await Promise.all(
+      const records = markNestedSkillIssues(await Promise.all(
         skillDirectories.map((skillPath) => this.scanSkillDirectory(root.source, skillPath, now))
-      );
+      ));
 
       return {
         skills: records,
@@ -103,7 +103,7 @@ export class SkillScanner {
 
   private async scanSkillDirectory(source: SkillSource, skillPath: string, now: string): Promise<SkillRecord> {
     const diskState = await readSkillDiskState(skillPath);
-    const health = analyzeSkillHealth(diskState);
+    const health = await analyzeSkillHealth(diskState);
     const primary = getPrimarySkillMarkdown(diskState);
     const name = primary?.frontmatter.name?.trim() || path.basename(skillPath);
     const description = primary?.frontmatter.description?.trim() || "";
@@ -197,6 +197,41 @@ function emptyDiagnostic(root: ScanRoot, lastScannedAt: string, exists: boolean)
     issueCount: 0,
     lastScannedAt
   };
+}
+
+function markNestedSkillIssues(skills: SkillRecord[]): SkillRecord[] {
+  return skills.map((skill) => {
+    const nestedUnder = skills.find((candidate) => candidate.id !== skill.id && isInside(candidate.path, skill.path));
+    const childSkills = skills.filter((candidate) => candidate.id !== skill.id && isInside(skill.path, candidate.path));
+
+    if (!nestedUnder && childSkills.length === 0) {
+      return skill;
+    }
+
+    const messages: string[] = [];
+    if (nestedUnder) {
+      messages.push(`这个技能位于另一个技能目录内：${nestedUnder.name}。`);
+    }
+    if (childSkills.length > 0) {
+      messages.push(`这个技能目录内还包含 ${childSkills.length} 个子技能目录。`);
+    }
+
+    return {
+      ...skill,
+      issues: [
+        ...skill.issues,
+        ...messages.map((message) => ({
+          code: "nested-skill" as const,
+          message
+        }))
+      ]
+    };
+  });
+}
+
+function isInside(parentPath: string, childPath: string): boolean {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(childPath));
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 async function hasSkillMarkdown(skillPath: string): Promise<boolean> {

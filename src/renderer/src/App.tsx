@@ -136,6 +136,10 @@ const statusLabels: Record<SkillStatus, string> = {
 const issueLabels: Record<string, string> = {
   "missing-skill-md": "缺少 SKILL.md",
   "invalid-frontmatter": "头部元信息无效",
+  "missing-description": "缺少描述",
+  "missing-reference": "引用文件缺失",
+  "unsafe-skill-path": "路径不安全",
+  "nested-skill": "嵌套结构",
   "duplicate-name": "名称重复",
   "path-missing": "路径不存在",
   "unsafe-import-path": "导入路径不安全",

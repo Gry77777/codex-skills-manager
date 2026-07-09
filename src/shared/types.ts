@@ -5,6 +5,10 @@ export type SkillStatus = "enabled" | "disabled" | "quarantined" | "invalid";
 export type SkillIssueCode =
   | "missing-skill-md"
   | "invalid-frontmatter"
+  | "missing-description"
+  | "missing-reference"
+  | "unsafe-skill-path"
+  | "nested-skill"
   | "duplicate-name"
   | "path-missing"
   | "unsafe-import-path"

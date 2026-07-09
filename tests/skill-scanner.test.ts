@@ -189,6 +189,85 @@ describe("SkillScanner", () => {
     expect(skill.issues.some((issue) => issue.code === "skill-md-conflict")).toBe(true);
   });
 
+  it("flags an empty description as a non-blocking skill quality issue", async () => {
+    const root = await makeTempDir();
+    const codexRoot = path.join(root, ".codex", "skills");
+    const skillPath = path.join(codexRoot, "empty-description");
+    await fs.mkdir(skillPath, { recursive: true });
+    await fs.writeFile(
+      path.join(skillPath, "SKILL.md"),
+      "---\nname: empty-description\ndescription:   \n---\n\n# empty-description\n",
+      "utf8"
+    );
+
+    const scanner = new SkillScanner(skillRoots({ codexLocal: codexRoot }));
+    const [skill] = await scanner.scan();
+
+    expect(skill.valid).toBe(true);
+    expect(skill.status).toBe("enabled");
+    expect(skill.issues.some((issue) => issue.code === "missing-description")).toBe(true);
+  });
+
+  it("flags missing relative references in SKILL.md as non-blocking quality issues", async () => {
+    const root = await makeTempDir();
+    const codexRoot = path.join(root, ".codex", "skills");
+    const skillPath = path.join(codexRoot, "missing-reference");
+    await fs.mkdir(path.join(skillPath, "references"), { recursive: true });
+    await fs.writeFile(path.join(skillPath, "references", "existing.md"), "# Existing\n", "utf8");
+    await fs.writeFile(
+      path.join(skillPath, "SKILL.md"),
+      [
+        "---",
+        "name: missing-reference",
+        "description: Checks links",
+        "---",
+        "",
+        "Read [existing](references/existing.md) and [missing](references/missing.md).",
+        "Run `scripts/setup.ps1` before use.",
+        "Ignore https://example.com/external.md and #heading."
+      ].join("\n"),
+      "utf8"
+    );
+
+    const scanner = new SkillScanner(skillRoots({ codexLocal: codexRoot }));
+    const [skill] = await scanner.scan();
+
+    expect(skill.valid).toBe(true);
+    expect(skill.issues.filter((issue) => issue.code === "missing-reference")).toHaveLength(2);
+    expect(skill.issues.map((issue) => issue.message).join("\n")).toContain("references/missing.md");
+    expect(skill.issues.map((issue) => issue.message).join("\n")).toContain("scripts/setup.ps1");
+  });
+
+  it("marks unsafe skill directory names as invalid", async () => {
+    const root = await makeTempDir();
+    const codexRoot = path.join(root, ".codex", "skills");
+    const unsafePath = path.join(codexRoot, "bad%2Fname");
+    await writeSkill(unsafePath, "bad-name", "Bad path");
+
+    const scanner = new SkillScanner(skillRoots({ codexLocal: codexRoot }));
+    const [skill] = await scanner.scan();
+
+    expect(skill.valid).toBe(false);
+    expect(skill.status).toBe("invalid");
+    expect(skill.issues.some((issue) => issue.code === "unsafe-skill-path")).toBe(true);
+  });
+
+  it("flags bundled child skills under a parent skill as a nested structure issue", async () => {
+    const root = await makeTempDir();
+    const codexRoot = path.join(root, ".codex", "skills");
+    const parentPath = path.join(codexRoot, "toolkit");
+    const childPath = path.join(parentPath, "child");
+    await writeSkill(parentPath, "toolkit", "Parent skill");
+    await writeSkill(childPath, "toolkit-child", "Child skill");
+
+    const scanner = new SkillScanner(skillRoots({ codexLocal: codexRoot }));
+    const skills = await scanner.scan();
+
+    expect(skills).toHaveLength(2);
+    expect(skills.every((skill) => skill.valid)).toBe(true);
+    expect(skills.some((skill) => skill.issues.some((issue) => issue.code === "nested-skill"))).toBe(true);
+  });
+
   it("handles unicode and spaced paths", async () => {
     const root = await makeTempDir();
     const codexRoot = path.join(root, "技能 skills");
