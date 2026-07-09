@@ -15,6 +15,17 @@ export type SkillIssue = {
   message: string;
 };
 
+export type SkillConflictRole = "primary" | "shadowed";
+
+export type SkillConflict = {
+  name: string;
+  role: SkillConflictRole;
+  primarySkillId: string;
+  primarySource: SkillSource;
+  sourcePriority: number;
+  relatedSkillIds: string[];
+};
+
 export type SkillRecord = {
   id: string;
   name: string;
@@ -28,8 +39,32 @@ export type SkillRecord = {
   managementNote?: string;
   valid: boolean;
   issues: SkillIssue[];
+  conflict?: SkillConflict;
   hash: string;
   lastScannedAt: string;
+};
+
+export type SkillSourceDiagnostic = {
+  source: SkillSource;
+  path: string;
+  exists: boolean;
+  scannedCount: number;
+  invalidCount: number;
+  issueCount: number;
+  lastScannedAt: string;
+  error?: string;
+};
+
+export type SkillScanDiagnostics = {
+  roots: SkillSourceDiagnostic[];
+  totalScanned: number;
+  totalInvalid: number;
+  lastScannedAt: string;
+};
+
+export type SkillScanResult = {
+  skills: SkillRecord[];
+  diagnostics: SkillScanDiagnostics;
 };
 
 export type RegistryFile = {
@@ -266,6 +301,7 @@ export type AiBatchAnalysisProgress = {
 };
 
 export type SkillsApi = {
+  scanWithDiagnostics: () => Promise<SkillScanResult>;
   scan: () => Promise<SkillRecord[]>;
   list: () => Promise<SkillRecord[]>;
   setStatus: (id: string, status: SettableSkillStatus) => Promise<SkillRecord>;

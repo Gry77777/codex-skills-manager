@@ -6,10 +6,12 @@ import type {
   MarketplaceSearchInput,
   SettableSkillStatus,
   SkillRecord,
+  SkillScanResult,
   SkillsApi
 } from "../shared/types.js";
 
 const skills: SkillsApi = {
+  scanWithDiagnostics: (): Promise<SkillScanResult> => ipcRenderer.invoke("skills:scanWithDiagnostics"),
   scan: (): Promise<SkillRecord[]> => ipcRenderer.invoke("skills:scan"),
   list: (): Promise<SkillRecord[]> => ipcRenderer.invoke("skills:list"),
   setStatus: (id: string, status: SettableSkillStatus): Promise<SkillRecord> =>

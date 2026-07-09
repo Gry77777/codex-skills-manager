@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { SkillIssue, SkillRecord, SkillSource } from "../shared/types.js";
+import type { SkillIssue, SkillRecord, SkillScanResult, SkillSource, SkillSourceDiagnostic } from "../shared/types.js";
 import type { SkillRoots } from "./paths.js";
 import { getPrimarySkillMarkdown, readSkillDiskState } from "./skill-disk-state.js";
 import { analyzeSkillHealth } from "./skill-health-analyzer.js";
@@ -13,10 +13,28 @@ type ScanRoot = {
   path: string;
 };
 
+type RootScanResult = {
+  skills: SkillRecord[];
+  diagnostic: SkillSourceDiagnostic;
+};
+
+const sourcePriority: Record<SkillSource, number> = {
+  imported: 5,
+  "codex-local": 4,
+  "agent-local": 3,
+  "superpowers-local": 2,
+  "plugin-cache": 1
+};
+
 export class SkillScanner {
   constructor(private readonly roots: SkillRoots) {}
 
   async scan(): Promise<SkillRecord[]> {
+    return (await this.scanWithDiagnostics()).skills;
+  }
+
+  async scanWithDiagnostics(): Promise<SkillScanResult> {
+    const now = new Date().toISOString();
     const roots: ScanRoot[] = [
       { source: "codex-local", path: this.roots.codexLocal },
       { source: "agent-local", path: this.roots.agentLocal },
@@ -25,35 +43,65 @@ export class SkillScanner {
       { source: "imported", path: this.roots.imported }
     ];
 
-    const scanned = (await Promise.all(roots.map((root) => this.scanRoot(root)))).flat();
-    return markDuplicateNames(scanned);
+    const rootResults = await Promise.all(roots.map((root) => this.scanRoot(root, now)));
+    const skills = markNameConflicts(rootResults.flatMap((result) => result.skills));
+
+    return {
+      skills,
+      diagnostics: {
+        roots: rootResults.map((result) => result.diagnostic),
+        totalScanned: skills.length,
+        totalInvalid: skills.filter((skill) => !skill.valid).length,
+        lastScannedAt: now
+      }
+    };
   }
 
-  private async scanRoot(root: ScanRoot): Promise<SkillRecord[]> {
+  private async scanRoot(root: ScanRoot, now: string): Promise<RootScanResult> {
     if (!(await exists(root.path))) {
-      return [];
+      return {
+        skills: [],
+        diagnostic: emptyDiagnostic(root, now, false)
+      };
     }
 
-    const entries = await fs.readdir(root.path, { withFileTypes: true });
-    const directories = entries.filter((entry) => entry.isDirectory());
-    const skillDirectories = (
-      await Promise.all(
-        directories.map(async (entry) => {
-          const entryPath = path.join(root.path, entry.name);
-          const nestedSkillDirectories = await collectSkillDirectories(entryPath);
-          return nestedSkillDirectories.length > 0 ? nestedSkillDirectories : [entryPath];
-        })
-      )
-    ).flat();
-    const records = await Promise.all(
-      skillDirectories.map((skillPath) => this.scanSkillDirectory(root.source, skillPath))
-    );
+    try {
+      const entries = await fs.readdir(root.path, { withFileTypes: true });
+      const directories = entries.filter((entry) => entry.isDirectory());
+      const skillDirectories = (
+        await Promise.all(
+          directories.map(async (entry) => {
+            const entryPath = path.join(root.path, entry.name);
+            const nestedSkillDirectories = await collectSkillDirectories(entryPath);
+            return nestedSkillDirectories.length > 0 ? nestedSkillDirectories : [entryPath];
+          })
+        )
+      ).flat();
+      const records = await Promise.all(
+        skillDirectories.map((skillPath) => this.scanSkillDirectory(root.source, skillPath, now))
+      );
 
-    return records;
+      return {
+        skills: records,
+        diagnostic: {
+          ...emptyDiagnostic(root, now, true),
+          scannedCount: records.length,
+          invalidCount: records.filter((record) => !record.valid).length,
+          issueCount: records.reduce((count, record) => count + record.issues.length, 0)
+        }
+      };
+    } catch (error) {
+      return {
+        skills: [],
+        diagnostic: {
+          ...emptyDiagnostic(root, now, true),
+          error: error instanceof Error ? error.message : "Unknown scan error"
+        }
+      };
+    }
   }
 
-  private async scanSkillDirectory(source: SkillSource, skillPath: string): Promise<SkillRecord> {
-    const now = new Date().toISOString();
+  private async scanSkillDirectory(source: SkillSource, skillPath: string, now: string): Promise<SkillRecord> {
     const diskState = await readSkillDiskState(skillPath);
     const health = analyzeSkillHealth(diskState);
     const primary = getPrimarySkillMarkdown(diskState);
@@ -139,6 +187,18 @@ function getSourceManagementNote(source: SkillSource): string | undefined {
   return undefined;
 }
 
+function emptyDiagnostic(root: ScanRoot, lastScannedAt: string, exists: boolean): SkillSourceDiagnostic {
+  return {
+    source: root.source,
+    path: root.path,
+    exists,
+    scannedCount: 0,
+    invalidCount: 0,
+    issueCount: 0,
+    lastScannedAt
+  };
+}
+
 async function hasSkillMarkdown(skillPath: string): Promise<boolean> {
   return (await exists(path.join(skillPath, "SKILL.md"))) || (await exists(path.join(skillPath, "SKILL.md.disabled")));
 }
@@ -171,29 +231,66 @@ async function hashDirectory(directory: string): Promise<string> {
   return hash.digest("hex");
 }
 
-function markDuplicateNames(skills: SkillRecord[]): SkillRecord[] {
+function markNameConflicts(skills: SkillRecord[]): SkillRecord[] {
   const byName = new Map<string, SkillRecord[]>();
 
   for (const skill of skills) {
-    const key = skill.name.toLowerCase();
+    const key = skill.name.trim().toLowerCase();
     byName.set(key, [...(byName.get(key) ?? []), skill]);
   }
 
   return skills.map((skill) => {
-    const duplicates = byName.get(skill.name.toLowerCase()) ?? [];
+    const duplicates = byName.get(skill.name.trim().toLowerCase()) ?? [];
     if (duplicates.length <= 1) {
       return skill;
     }
 
+    const ordered = [...duplicates].sort(compareConflictPriority);
+    const primary = ordered[0];
+    const relatedSkillIds = ordered.map((duplicate) => duplicate.id);
+    const role = skill.id === primary.id ? "primary" : "shadowed";
+    const message =
+      role === "primary"
+        ? `发现 ${duplicates.length} 个同名技能“${skill.name}”，当前按来源优先级使用 ${getSourceName(skill.source)}。`
+        : `发现同名技能“${skill.name}”，当前记录被 ${getSourceName(primary.source)} 来源覆盖。`;
+
     return {
       ...skill,
+      conflict: {
+        name: skill.name,
+        role,
+        primarySkillId: primary.id,
+        primarySource: primary.source,
+        sourcePriority: sourcePriority[skill.source],
+        relatedSkillIds
+      },
       issues: [
-        ...skill.issues,
+        ...skill.issues.filter((issue) => issue.code !== "duplicate-name"),
         {
           code: "duplicate-name",
-          message: `发现另一个同名技能：“${skill.name}”。这个记录仍然可以单独管理。`
+          message
         }
       ]
     };
   });
+}
+
+function compareConflictPriority(left: SkillRecord, right: SkillRecord): number {
+  return (
+    Number(right.valid) - Number(left.valid) ||
+    sourcePriority[right.source] - sourcePriority[left.source] ||
+    left.path.localeCompare(right.path)
+  );
+}
+
+function getSourceName(source: SkillSource): string {
+  const labels: Record<SkillSource, string> = {
+    imported: "已导入",
+    "codex-local": ".codex",
+    "agent-local": ".agents",
+    "superpowers-local": "Superpowers",
+    "plugin-cache": "插件缓存"
+  };
+
+  return labels[source];
 }

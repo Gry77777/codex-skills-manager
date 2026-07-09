@@ -16,6 +16,14 @@ export type StatusFilterCounts = SkillCounts & {
   effective: number;
 };
 
+export type SkillConflictGroup = {
+  name: string;
+  primarySkillId: string;
+  primarySource: SkillSource;
+  total: number;
+  shadowed: number;
+};
+
 export type SkillListViewModelInput = {
   skills: SkillRecord[];
   search: string;
@@ -28,6 +36,7 @@ export type SkillListViewModel = {
   globalCounts: SkillCounts;
   currentCounts: SkillCounts;
   statusFilterCounts: StatusFilterCounts;
+  conflictGroups: SkillConflictGroup[];
 };
 
 export function buildSkillListViewModel(input: SkillListViewModelInput): SkillListViewModel {
@@ -41,7 +50,8 @@ export function buildSkillListViewModel(input: SkillListViewModelInput): SkillLi
     visibleSkills,
     globalCounts: countSkills(input.skills),
     currentCounts: countSkills(visibleSkills),
-    statusFilterCounts: countStatusFilters(matchesSearchAndSource)
+    statusFilterCounts: countStatusFilters(matchesSearchAndSource),
+    conflictGroups: buildConflictGroups(input.skills)
   };
 }
 
@@ -88,4 +98,30 @@ function countStatusFilters(skills: SkillRecord[]): StatusFilterCounts {
     all: skills.length,
     effective: counts.enabled
   };
+}
+
+function buildConflictGroups(skills: SkillRecord[]): SkillConflictGroup[] {
+  const groups = new Map<string, SkillRecord[]>();
+
+  for (const skill of skills) {
+    if (!skill.conflict) {
+      continue;
+    }
+
+    groups.set(skill.conflict.name, [...(groups.get(skill.conflict.name) ?? []), skill]);
+  }
+
+  return [...groups.entries()]
+    .map(([name, groupSkills]) => {
+      const primary = groupSkills.find((skill) => skill.conflict?.role === "primary") ?? groupSkills[0];
+
+      return {
+        name,
+        primarySkillId: primary.conflict?.primarySkillId ?? primary.id,
+        primarySource: primary.conflict?.primarySource ?? primary.source,
+        total: groupSkills.length,
+        shadowed: groupSkills.filter((skill) => skill.conflict?.role === "shadowed").length
+      };
+    })
+    .sort((left, right) => right.shadowed - left.shadowed || left.name.localeCompare(right.name));
 }

@@ -8,6 +8,7 @@ import type {
   MarketplaceSearchResult,
   SettableSkillStatus,
   SkillRecord,
+  SkillScanResult,
   SkillRepairSummary
 } from "../shared/types.js";
 import { getSkillRoots } from "./paths.js";
@@ -28,8 +29,16 @@ export class SkillsController {
   private readonly marketplace = new SkillMarketplace();
   private readonly repairer = new SkillRepairer();
 
+  async scanWithDiagnostics(): Promise<SkillScanResult> {
+    const result = await this.scanner.scanWithDiagnostics();
+    return {
+      skills: await this.registry.list(result.skills),
+      diagnostics: result.diagnostics
+    };
+  }
+
   async scan(): Promise<SkillRecord[]> {
-    return this.registry.list(await this.scanner.scan());
+    return (await this.scanWithDiagnostics()).skills;
   }
 
   async list(): Promise<SkillRecord[]> {

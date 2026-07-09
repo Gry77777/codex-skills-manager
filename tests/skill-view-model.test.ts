@@ -48,6 +48,52 @@ describe("buildSkillListViewModel", () => {
     expect(canUseSkillStatusToggle(record({ source: "superpowers-local", canSetStatus: true }))).toBe(true);
     expect(canUseSkillStatusToggle(record({ status: "invalid", valid: false }))).toBe(false);
   });
+
+  it("summarizes duplicate skill conflict groups for the UI", () => {
+    const primary = record({
+      id: "imported-review",
+      name: "review",
+      source: "imported",
+      conflict: {
+        name: "review",
+        role: "primary",
+        primarySkillId: "imported-review",
+        primarySource: "imported",
+        sourcePriority: 5,
+        relatedSkillIds: ["imported-review", "codex-review"]
+      }
+    });
+    const shadowed = record({
+      id: "codex-review",
+      name: "review",
+      source: "codex-local",
+      conflict: {
+        name: "review",
+        role: "shadowed",
+        primarySkillId: "imported-review",
+        primarySource: "imported",
+        sourcePriority: 4,
+        relatedSkillIds: ["imported-review", "codex-review"]
+      }
+    });
+
+    const view = buildSkillListViewModel({
+      skills: [shadowed, primary, record({ id: "other", name: "other" })],
+      search: "",
+      sourceFilter: "all",
+      statusFilter: "all"
+    });
+
+    expect(view.conflictGroups).toEqual([
+      {
+        name: "review",
+        primarySkillId: "imported-review",
+        primarySource: "imported",
+        total: 2,
+        shadowed: 1
+      }
+    ]);
+  });
 });
 
 function record(overrides: Partial<SkillRecord>): SkillRecord {
@@ -63,6 +109,7 @@ function record(overrides: Partial<SkillRecord>): SkillRecord {
     canSetStatus: true,
     valid: true,
     issues: [],
+    conflict: undefined,
     hash: "hash",
     lastScannedAt: "2026-07-08T00:00:00.000Z",
     ...overrides

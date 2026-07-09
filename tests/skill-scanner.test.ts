@@ -98,6 +98,62 @@ describe("SkillScanner", () => {
     ]);
   });
 
+  it("returns scan diagnostics for every configured source root", async () => {
+    const root = await makeTempDir();
+    const codexRoot = path.join(root, ".codex", "skills");
+    const pluginCacheRoot = path.join(root, ".codex", "plugins", "cache");
+    const importedRoot = path.join(root, "imports");
+    await writeSkill(path.join(codexRoot, "docs"), "docs", "Docs helper");
+    await writeSkill(path.join(pluginCacheRoot, "openai", "skills", "security"), "security", "Security helper");
+
+    const scanner = new SkillScanner(skillRoots({
+      codexLocal: codexRoot,
+      pluginCache: pluginCacheRoot,
+      imported: importedRoot
+    }));
+    const result = await scanner.scanWithDiagnostics();
+
+    expect(result.skills).toHaveLength(2);
+    expect(result.diagnostics.totalScanned).toBe(2);
+    expect(result.diagnostics.roots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: "codex-local", path: codexRoot, exists: true, scannedCount: 1 }),
+        expect.objectContaining({ source: "plugin-cache", path: pluginCacheRoot, exists: true, scannedCount: 1 }),
+        expect.objectContaining({ source: "imported", path: importedRoot, exists: false, scannedCount: 0 })
+      ])
+    );
+    expect(result.diagnostics.roots.every((rootDiagnostic) => rootDiagnostic.lastScannedAt)).toBe(true);
+  });
+
+  it("marks duplicate names with the selected source priority winner and shadowed records", async () => {
+    const root = await makeTempDir();
+    const codexRoot = path.join(root, ".codex", "skills");
+    const agentRoot = path.join(root, ".agents", "skills");
+    const pluginCacheRoot = path.join(root, ".codex", "plugins", "cache");
+    const importedRoot = path.join(root, "imports");
+    await writeSkill(path.join(pluginCacheRoot, "plugin", "skills", "review"), "review", "Plugin review");
+    await writeSkill(path.join(agentRoot, "review"), "review", "Agent review");
+    await writeSkill(path.join(codexRoot, "review"), "review", "Codex review");
+    await writeSkill(path.join(importedRoot, "review"), "review", "Imported review");
+
+    const scanner = new SkillScanner(skillRoots({
+      codexLocal: codexRoot,
+      agentLocal: agentRoot,
+      pluginCache: pluginCacheRoot,
+      imported: importedRoot
+    }));
+    const skills = await scanner.scan();
+    const winner = skills.find((skill) => skill.source === "imported");
+    const shadowed = skills.filter((skill) => skill.source !== "imported");
+
+    expect(winner?.conflict?.role).toBe("primary");
+    expect(winner?.conflict?.sourcePriority).toBe(5);
+    expect(winner?.issues.some((issue) => issue.code === "duplicate-name")).toBe(true);
+    expect(shadowed).toHaveLength(3);
+    expect(shadowed.every((skill) => skill.conflict?.role === "shadowed")).toBe(true);
+    expect(shadowed.every((skill) => skill.conflict?.primarySkillId === winner?.id)).toBe(true);
+  });
+
   it("treats SKILL.md.disabled as a valid disabled skill", async () => {
     const root = await makeTempDir();
     const codexRoot = path.join(root, ".codex", "skills");

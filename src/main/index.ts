@@ -62,6 +62,7 @@ app.on("window-all-closed", () => {
 });
 
 function registerIpc(): void {
+  ipcMain.handle("skills:scanWithDiagnostics", () => controller.scanWithDiagnostics());
   ipcMain.handle("skills:scan", () => controller.scan());
   ipcMain.handle("skills:list", () => controller.list());
   ipcMain.handle("skills:setStatus", (_event, id: string, status: "enabled" | "disabled") =>

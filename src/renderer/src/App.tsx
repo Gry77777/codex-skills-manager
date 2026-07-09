@@ -58,12 +58,14 @@ import type {
   MarketplaceSourceView,
   SettableSkillStatus,
   SkillRecord,
+  SkillScanDiagnostics,
   SkillSource,
   SkillStatus
 } from "../../shared/types";
 import {
   buildSkillListViewModel,
   canUseSkillStatusToggle,
+  type SkillConflictGroup,
   type SourceFilter,
   type StatusFilter
 } from "./skill-view-model";
@@ -281,6 +283,14 @@ function getSourceMark(source: SkillSource): string {
   return "M";
 }
 
+function getConflictLabel(skill: SkillRecord): string | null {
+  if (!skill.conflict) {
+    return null;
+  }
+
+  return skill.conflict.role === "primary" ? "冲突优先" : "被覆盖";
+}
+
 type SkillMarkdownSummary = {
   overview: string;
   highlights: string[];
@@ -371,6 +381,20 @@ function formatDate(value: string): string {
   }
 
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit" }).format(new Date(timestamp));
+}
+
+function formatDateTime(value: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return "未知时间";
+  }
+
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(timestamp));
 }
 
 function isConcreteMarketplaceSkill(skill: MarketplaceSkill): boolean {
@@ -716,6 +740,7 @@ function getSkillsApi(): Window["skills"] {
   }
 
   const requiredMethods: Array<keyof Window["skills"]> = [
+    "scanWithDiagnostics",
     "scan",
     "list",
     "setStatus",
@@ -795,6 +820,7 @@ function formatUserError(error: unknown, fallback: string): string {
 
 export function App(): JSX.Element {
   const [skills, setSkills] = useState<SkillRecord[]>([]);
+  const [scanDiagnostics, setScanDiagnostics] = useState<SkillScanDiagnostics | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [skillMd, setSkillMd] = useState("");
   const [search, setSearch] = useState("");
@@ -856,6 +882,7 @@ export function App(): JSX.Element {
   const counts = skillListView.currentCounts;
   const globalCounts = skillListView.globalCounts;
   const statusFilterCounts = skillListView.statusFilterCounts;
+  const conflictGroups = skillListView.conflictGroups;
 
   const sortedSkills = useMemo(() => {
     return [...filteredSkills].sort((left, right) =>
@@ -996,13 +1023,20 @@ export function App(): JSX.Element {
     };
   }, [selectedSkill]);
 
+  async function refreshSkillsFromDisk(): Promise<SkillRecord[]> {
+    const result = await getSkillsApi().scanWithDiagnostics();
+    setSkills(result.skills);
+    setScanDiagnostics(result.diagnostics);
+    return result.skills;
+  }
+
   async function loadSkills(): Promise<void> {
     setIsLoading(true);
     setError(null);
     setNotice(null);
 
     try {
-      setSkills(await getSkillsApi().scan());
+      await refreshSkillsFromDisk();
     } catch (scanError) {
       setError(formatUserError(scanError, "扫描技能失败。"));
     } finally {
@@ -1719,8 +1753,7 @@ export function App(): JSX.Element {
 
     try {
       const summary = await getSkillsApi().importLocalSkills();
-      const scanned = await getSkillsApi().scan();
-      setSkills(scanned);
+      const scanned = await refreshSkillsFromDisk();
       setSourceFilter("imported");
       setStatusFilter("all");
       if (summary.imported > 0 || summary.synced > 0) {
@@ -1758,7 +1791,7 @@ export function App(): JSX.Element {
 
     try {
       const summary = await getSkillsApi().repairBrokenSkills();
-      setSkills(await getSkillsApi().scan());
+      await refreshSkillsFromDisk();
       setStatusFilter(summary.failed > 0 ? "invalid" : "all");
       setNotice(
         `修复完成：检查 ${summary.checked} 个，修复 ${summary.repaired} 项，跳过 ${summary.skipped} 项，失败 ${summary.failed} 项。`
@@ -1914,6 +1947,15 @@ export function App(): JSX.Element {
             onClick={() => setStatusFilter("invalid")}
           />
         </section>
+
+        <SourceDiagnosticsPanel
+          diagnostics={scanDiagnostics}
+          conflictGroups={conflictGroups}
+          onSelectSource={(source) => {
+            setSourceFilter(source);
+            setStatusFilter("all");
+          }}
+        />
       </section>
 
       {error ? (
@@ -2112,6 +2154,86 @@ function QuickFilterButton({
       <span>{label}</span>
       <strong>{count}</strong>
     </button>
+  );
+}
+
+function SourceDiagnosticsPanel({
+  diagnostics,
+  conflictGroups,
+  onSelectSource
+}: {
+  diagnostics: SkillScanDiagnostics | null;
+  conflictGroups: SkillConflictGroup[];
+  onSelectSource: (source: SkillSource) => void;
+}): JSX.Element {
+  const roots = diagnostics?.roots ?? [];
+  const failedRoots = roots.filter((root) => root.error);
+  const missingRoots = roots.filter((root) => !root.exists);
+
+  return (
+    <section className="source-diagnostics" aria-label="技能来源诊断">
+      <div className="source-diagnostics-heading">
+        <div>
+          <span>来源诊断</span>
+          <h2>扫描根目录</h2>
+        </div>
+        <div className="source-diagnostics-totals">
+          <strong>{diagnostics?.totalScanned ?? 0}</strong>
+          <span>已发现</span>
+          <strong>{conflictGroups.length}</strong>
+          <span>同名冲突</span>
+        </div>
+      </div>
+
+      <div className="source-diagnostic-grid">
+        {roots.map((root) => (
+          <button
+            key={root.source}
+            className={`source-diagnostic-card ${root.exists ? "" : "is-missing"} ${root.error ? "has-error" : ""}`}
+            type="button"
+            onClick={() => onSelectSource(root.source)}
+          >
+            <div className="source-diagnostic-topline">
+              <span className={`source-pill source-${root.source}`}>{sourceLabels[root.source]}</span>
+              <strong>{root.exists ? "存在" : "缺失"}</strong>
+            </div>
+            <code title={root.path}>{root.path}</code>
+            <div className="source-diagnostic-stats">
+              <span>技能 {root.scannedCount}</span>
+              <span>无效 {root.invalidCount}</span>
+              <span>问题 {root.issueCount}</span>
+            </div>
+            <div className="source-diagnostic-footer">
+              <span>{formatDateTime(root.lastScannedAt)}</span>
+              {root.error ? <span className="source-diagnostic-error">{root.error}</span> : null}
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <div className="source-diagnostics-bottom">
+        <div className="source-health-note">
+          <CheckCircle2 aria-hidden="true" size={16} />
+          <span>
+            {failedRoots.length === 0 && missingRoots.length === 0
+              ? "所有可配置来源都已完成扫描"
+              : `缺失 ${missingRoots.length} 个来源，失败 ${failedRoots.length} 个来源`}
+          </span>
+        </div>
+        <div className="conflict-summary" aria-label="同名技能冲突">
+          <strong>冲突</strong>
+          {conflictGroups.length === 0 ? (
+            <span>无同名冲突</span>
+          ) : (
+            conflictGroups.slice(0, 4).map((group) => (
+              <span key={group.name} title={`${group.name}: ${group.total} 个来源，${group.shadowed} 个被覆盖`}>
+                {group.name} · {sourceLabels[group.primarySource]} 优先
+              </span>
+            ))
+          )}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -2454,6 +2576,7 @@ function SkillCard({
 }): JSX.Element {
   const visual = getSkillVisual(skill);
   const summary = aiRecord?.analysis.summaryZh ?? skill.summaryZh;
+  const conflictLabel = getConflictLabel(skill);
 
   return (
     <article
@@ -2480,6 +2603,7 @@ function SkillCard({
             </div>
             <div className="skill-card-kicker">
               <span className={`source-pill source-${skill.source}`}>{getSourceLabel(skill)}</span>
+              {conflictLabel ? <span className={`conflict-pill conflict-${skill.conflict?.role}`}>{conflictLabel}</span> : null}
               <span className="skill-visual-label">{visual.label}</span>
             </div>
           </div>
@@ -3734,6 +3858,7 @@ function SkillDetails({
   const hiddenSectionCount = Math.max(0, contentSummary.stats.sections - visibleSections.length);
   const canAnalyzeWithAi = Boolean(aiSettings?.enabled && aiSettings.hasApiKey);
   const activeAiProvider = getAiProviderPreset(aiSettings?.provider ?? defaultAiSettingsForm.provider);
+  const conflictLabel = getConflictLabel(skill);
 
   async function analyzeWithAi(): Promise<void> {
     if (!skill) {
@@ -3791,6 +3916,7 @@ function SkillDetails({
             <div className="details-title-meta">
               <span className={`status-pill status-${skill.status}`}>{statusLabels[skill.status]}</span>
               <span className={`source-pill source-${skill.source}`}>{getSourceLabel(skill)}</span>
+              {conflictLabel ? <span className={`conflict-pill conflict-${skill.conflict?.role}`}>{conflictLabel}</span> : null}
               <span className={`issue-pill ${skill.issues.length > 0 ? "has-issues" : ""}`}>
                 问题 {skill.issues.length}
               </span>
@@ -3881,6 +4007,16 @@ function SkillDetails({
           <span>来源</span>
           <p>{getSourceLabel(skill)}</p>
         </div>
+        {skill.conflict ? (
+          <div className="info-card info-card-wide">
+            <span>同名冲突</span>
+            <p>
+              {skill.conflict.role === "primary"
+                ? `当前记录优先使用；同名组共 ${skill.conflict.relatedSkillIds.length} 个来源。`
+                : `当前记录被 ${sourceLabels[skill.conflict.primarySource]} 来源覆盖。`}
+            </p>
+          </div>
+        ) : null}
         {skill.managementNote ? (
           <div className="info-card info-card-wide">
             <span>管理说明</span>

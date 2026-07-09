@@ -791,6 +791,158 @@ h1 {
   animation: active-filter-pop 180ms ease-out both;
 }
 
+.source-diagnostics {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.68);
+  border: 1px solid rgba(126, 146, 140, 0.24);
+  border-radius: 8px;
+}
+
+.source-diagnostics-heading,
+.source-diagnostics-bottom {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.source-diagnostics-heading span,
+.source-health-note,
+.conflict-summary {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.source-diagnostics-heading h2 {
+  margin: 2px 0 0;
+  color: var(--text);
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.source-diagnostics-totals,
+.source-health-note,
+.conflict-summary {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.source-diagnostics-totals strong {
+  color: var(--text);
+  font-size: 16px;
+}
+
+.source-diagnostic-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.source-diagnostic-card {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  min-height: 126px;
+  padding: 9px;
+  text-align: left;
+  color: var(--text);
+  background: #ffffff;
+  border: 1px solid #d8e3df;
+  border-radius: 7px;
+  box-shadow: 0 1px 2px rgba(20, 32, 51, 0.04);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.source-diagnostic-card:hover {
+  border-color: var(--accent-border);
+  box-shadow: var(--shadow-soft);
+  transform: translateY(-1px);
+}
+
+.source-diagnostic-card.is-missing {
+  color: #6b7280;
+  background: #f8fafc;
+  border-style: dashed;
+}
+
+.source-diagnostic-card.has-error {
+  border-color: var(--danger-border);
+  background: var(--danger-soft);
+}
+
+.source-diagnostic-topline,
+.source-diagnostic-stats,
+.source-diagnostic-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.source-diagnostic-topline {
+  justify-content: space-between;
+}
+
+.source-diagnostic-topline strong {
+  color: #4c5a67;
+  font-size: 12px;
+}
+
+.source-diagnostic-card code {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: #556575;
+  font-family: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-diagnostic-stats span,
+.source-diagnostic-footer span,
+.conflict-summary span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 7px;
+  color: #4f5b68;
+  background: #f1f5f7;
+  border: 1px solid #dbe4e8;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 760;
+  white-space: nowrap;
+}
+
+.source-diagnostic-footer {
+  align-self: end;
+}
+
+.source-diagnostic-error {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--danger) !important;
+  background: #fff8f6 !important;
+  border-color: var(--danger-border) !important;
+  text-overflow: ellipsis;
+}
+
+.conflict-summary strong {
+  color: var(--warning);
+}
+
 .banner {
   display: flex;
   align-items: center;
@@ -2172,6 +2324,7 @@ h1 {
 
 .source-pill,
 .status-pill,
+.conflict-pill,
 .blocked-switch,
 .issue-pill {
   display: inline-flex;
@@ -2191,6 +2344,7 @@ h1 {
 
 .skill-card:hover .source-pill,
 .skill-card:hover .status-pill,
+.skill-card:hover .conflict-pill,
 .skill-card:hover .issue-pill {
   transform: translateY(-1px);
 }
@@ -2235,6 +2389,24 @@ h1 {
   color: var(--source-managed);
   background: #e7f4ee;
   border-color: #bedccd;
+}
+
+.conflict-pill {
+  min-height: 21px;
+  padding: 0 7px;
+  font-size: 11px;
+}
+
+.conflict-primary {
+  color: #7a4a08;
+  background: #fff4da;
+  border-color: #e2c681;
+}
+
+.conflict-shadowed {
+  color: #7f1d1d;
+  background: #fff0ed;
+  border-color: #efc8bd;
 }
 
 .status-enabled {
@@ -4533,6 +4705,10 @@ h1 {
   .command-overview {
     grid-column: 1 / -1;
   }
+
+  .source-diagnostic-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1024px) {
@@ -4602,6 +4778,16 @@ h1 {
   }
 
   .filters {
+    grid-template-columns: 1fr;
+  }
+
+  .source-diagnostics-heading,
+  .source-diagnostics-bottom {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .source-diagnostic-grid {
     grid-template-columns: 1fr;
   }
 
